@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:path/path.dart' as p;
 import 'package:readmesh/core/errors/exceptions.dart';
 import 'package:readmesh/data/database/app_database.dart';
 import 'package:readmesh/data/repositories/book_repository.dart';
@@ -41,7 +42,7 @@ void main() {
 
   group('PdfImportPipeline Tests', () {
     test('Successfully imports a valid PDF, computes SHA-256, and stores only metadata', () async {
-      final samplePdf = File('${tempDir.path}/source_sample.pdf');
+      final samplePdf = File(p.join(tempDir.path, 'source_sample.pdf'));
       await TestHelpers.createSamplePdfFile(samplePdf, pageCount: 12);
 
       final book = await pipeline.importBook(
@@ -54,7 +55,9 @@ void main() {
       expect(book.author, equals('Mesh Architect'));
       expect(book.pageCount, equals(12));
       expect(book.sha256Hash.isNotEmpty, isTrue);
-      expect(book.filePath, contains('/books/'));
+      // Platform-independent check: book path should be under books directory
+      expect(p.split(book.filePath).contains('books'), isTrue);
+      expect(p.basename(p.dirname(book.filePath)), equals('books'));
 
       // Check physical file exists in books directory
       expect(await File(book.filePath).exists(), isTrue);
@@ -70,7 +73,7 @@ void main() {
     });
 
     test('Rejects PDF files larger than 300 MB limit', () async {
-      final oversizedPdf = File('${tempDir.path}/oversized.pdf');
+      final oversizedPdf = File(p.join(tempDir.path, 'oversized.pdf'));
       await TestHelpers.createOversizedPdfFile(oversizedPdf, sizeBytes: 301 * 1024 * 1024);
 
       await expectLater(
@@ -84,7 +87,7 @@ void main() {
     });
 
     test('Rejects PDFs exceeding approximately 10,000 pages', () async {
-      final hugePagesPdf = File('${tempDir.path}/huge_pages.pdf');
+      final hugePagesPdf = File(p.join(tempDir.path, 'huge_pages.pdf'));
       await TestHelpers.createSamplePdfFile(hugePagesPdf, pageCount: 10001);
 
       await expectLater(
@@ -98,7 +101,7 @@ void main() {
     });
 
     test('Validates available disk space and rejects if storage is insufficient', () async {
-      final samplePdf = File('${tempDir.path}/normal.pdf');
+      final samplePdf = File(p.join(tempDir.path, 'normal.pdf'));
       await TestHelpers.createSamplePdfFile(samplePdf, pageCount: 5);
 
       // Simulate only 1 MB available disk space
@@ -115,7 +118,7 @@ void main() {
     });
 
     test('Rejects duplicate PDF imports by detecting matching SHA-256 checksum', () async {
-      final samplePdf = File('${tempDir.path}/duplicate_candidate.pdf');
+      final samplePdf = File(p.join(tempDir.path, 'duplicate_candidate.pdf'));
       await TestHelpers.createSamplePdfFile(samplePdf, pageCount: 3);
 
       // First import succeeds
@@ -129,7 +132,7 @@ void main() {
     });
 
     test('Rolls back atomically on failure and cleans up all temporary artifacts', () async {
-      final corruptPdf = File('${tempDir.path}/corrupt.pdf');
+      final corruptPdf = File(p.join(tempDir.path, 'corrupt.pdf'));
       await corruptPdf.writeAsString('Definitely not a PDF content');
 
       await expectLater(

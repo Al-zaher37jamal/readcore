@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:path/path.dart' as p;
 import 'package:readmesh/data/storage/book_file_manager.dart';
 
 void main() {
@@ -27,13 +28,13 @@ void main() {
 
     test('Generates correct paths', () {
       final bookPath = fileManager.getBookFilePath('book123');
-      expect(bookPath, endsWith('/books/book123.pdf'));
+      expect(bookPath, endsWith(p.join('books', 'book123.pdf')));
 
       final tempPath = fileManager.getTempFilePath('temp123.tmp');
-      expect(tempPath, endsWith('/temp/temp123.tmp'));
+      expect(tempPath, endsWith(p.join('temp', 'temp123.tmp')));
 
       final cachePath = fileManager.getCacheFilePath('cache123.bin');
-      expect(cachePath, endsWith('/cache/cache123.bin'));
+      expect(cachePath, endsWith(p.join('cache', 'cache123.bin')));
     });
 
     test('Performs file existence, size, and deletion operations', () async {
