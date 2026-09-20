@@ -399,9 +399,10 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
           minHeight: 4,
         ),
 
-        // PDF Page Rendering View
+        // PDF Page Rendering View - REAL PDF rendering from local file
         Expanded(
           child: PdfPageView(
+            filePath: widget.book.filePath,
             pageNumber: _currentPage,
             totalPages: _totalPages,
             bookTitle: widget.book.title,
