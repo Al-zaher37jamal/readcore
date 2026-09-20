@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:readmesh/core/di/injection.dart';
+import 'package:readmesh/core/l10n/app_localizations.dart';
 import 'package:readmesh/data/database/app_database.dart';
 import 'package:readmesh/data/repositories/reading_progress_repository.dart';
 import 'package:readmesh/data/repositories/session_repository.dart';
@@ -13,6 +14,7 @@ import 'package:readmesh/features/reader/pdf_page_view.dart';
 /// Screen that opens an imported PDF, renders pages, tracks reading position,
 /// navigates across pages, and automatically saves/restores progress from SQLite.
 /// In a multi-device LAN session, synchronizes page turns and session lifecycle between Host and Participants.
+/// FIXED: Prevent reading after ended, localization, RTL.
 class PdfReaderScreen extends StatefulWidget {
   final Book book;
   final String? sessionId;
@@ -20,7 +22,6 @@ class PdfReaderScreen extends StatefulWidget {
   final LanHostServer? hostServer;
   final LanParticipantClient? participantClient;
 
-  // Optional injections for unit/widget testing
   final ReadingProgressRepository? readingProgressRepository;
   final DeviceService? deviceService;
   final SessionRepository? sessionRepository;
@@ -74,9 +75,8 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
 
   void _setupLanSyncSubscriptions() {
     if (!widget.isHost && widget.participantClient != null) {
-      // 1. Follow Host's authoritative page changes
       _participantPageSub = widget.participantClient!.pageStream.listen((syncedPage) {
-        if (mounted && syncedPage != _currentPage) {
+        if (mounted && syncedPage != _currentPage && _sessionStatus != 'ended') {
           setState(() {
             _currentPage = syncedPage;
           });
@@ -84,7 +84,6 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
         }
       });
 
-      // 2. Reflect Host's session status (active, paused, ended)
       _participantStatusSub = widget.participantClient!.statusStream.listen((status) {
         if (mounted) {
           setState(() {
@@ -102,8 +101,6 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
     super.dispose();
   }
 
-  /// Initializes the reader, verifies the physical file, ensures session exists,
-  /// and restores the last saved reading position from SQLite.
   Future<void> _initializeReader() async {
     setState(() {
       _isLoading = true;
@@ -111,7 +108,6 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
     });
 
     try {
-      // 1. Verify physical file exists
       final file = File(widget.book.filePath);
       if (!file.existsSync()) {
         setState(() {
@@ -120,11 +116,9 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
         });
         return;
       }
-      // 2. Identify local device
       final profile = await _deviceService.getOrCreateCurrentProfile();
       _deviceId = profile.id;
 
-      // 3. Ensure a session record exists in SQLite for foreign key integrity
       final existingSession = await _sessionRepo.getSessionById(_activeSessionId);
       if (existingSession == null) {
         await _sessionRepo.createSession(
@@ -134,9 +128,15 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
           bookId: widget.book.id,
           status: 'active',
         );
+      } else {
+        // If session already ended, prevent reading
+        if (existingSession.status == 'ended') {
+          setState(() {
+            _sessionStatus = 'ended';
+          });
+        }
       }
 
-      // 4. Restore the last reading position from SQLite
       ReadingProgress? savedProgress;
       if (widget.sessionId != null) {
         savedProgress = await _progressRepo.getProgress(_activeSessionId, _deviceId);
@@ -151,7 +151,6 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
         _currentPage = 1;
       }
 
-      // Initial save to establish reading position
       await _saveProgress();
 
       if (mounted) {
@@ -169,7 +168,6 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
     }
   }
 
-  /// Saves the current page progress asynchronously to SQLite.
   Future<void> _saveProgress() async {
     if (_deviceId.isEmpty) return;
     try {
@@ -182,13 +180,11 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
         currentPage: _currentPage,
         totalPages: _totalPages,
       );
-    } catch (_) {
-      // Background save error handling
-    }
+    } catch (_) {}
   }
 
-  /// Navigates to the previous page (Host or Solo).
   void previousPage() {
+    if (_sessionStatus == 'ended') return;
     if (!widget.isHost && widget.sessionId != null) return;
     if (_currentPage > 1) {
       setState(() {
@@ -201,8 +197,8 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
     }
   }
 
-  /// Navigates to the next page (Host or Solo).
   void nextPage() {
+    if (_sessionStatus == 'ended') return;
     if (!widget.isHost && widget.sessionId != null) return;
     if (_currentPage < _totalPages) {
       setState(() {
@@ -215,8 +211,8 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
     }
   }
 
-  /// Jumps to a specific page number.
   void goToPage(int page) {
+    if (_sessionStatus == 'ended') return;
     if (!widget.isHost && widget.sessionId != null) return;
     final targetPage = page.clamp(1, _totalPages);
     if (targetPage != _currentPage) {
@@ -230,26 +226,26 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
     }
   }
 
-  /// Opens jump to page dialog.
   void _showJumpToPageDialog() {
+    final l10n = AppLocalizations.of(context);
     final controller = TextEditingController(text: _currentPage.toString());
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Jump to Page'),
+        title: Text(l10n.jumpToPage),
         content: TextField(
           controller: controller,
           keyboardType: TextInputType.number,
           autofocus: true,
           decoration: InputDecoration(
-            labelText: 'Page Number (1 - $_totalPages)',
+            labelText: l10n.pageNumberRange(_totalPages),
             border: const OutlineInputBorder(),
           ),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancel'),
+            child: Text(l10n.cancel),
           ),
           ElevatedButton(
             onPressed: () {
@@ -259,7 +255,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
               }
               Navigator.pop(ctx);
             },
-            child: const Text('Go'),
+            child: Text(l10n.go),
           ),
         ],
       ),
@@ -268,6 +264,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context);
     return Scaffold(
       backgroundColor: const Color(0xFFF8FAFC),
       appBar: AppBar(
@@ -282,7 +279,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
             ),
             if (widget.sessionId != null)
               Text(
-                'Room: ${widget.sessionId}',
+                '${l10n.roomCode}: ${widget.sessionId}',
                 style: const TextStyle(fontSize: 11, color: Color(0xFF10B981)),
               ),
           ],
@@ -290,8 +287,8 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
         actions: [
           IconButton(
             icon: const Icon(Icons.bookmark_outline),
-            tooltip: 'Jump to Page',
-            onPressed: _isLoading || _errorMessage != null ? null : _showJumpToPageDialog,
+            tooltip: l10n.jumpToPage,
+            onPressed: _isLoading || _errorMessage != null || _sessionStatus == 'ended' ? null : _showJumpToPageDialog,
           ),
         ],
       ),
@@ -301,16 +298,17 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
   }
 
   Widget _buildBody() {
+    final l10n = AppLocalizations.of(context);
     if (_isLoading) {
-      return const Center(
+      return Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            CircularProgressIndicator(),
-            SizedBox(height: 16),
+            const CircularProgressIndicator(),
+            const SizedBox(height: 16),
             Text(
-              'Opening document...',
-              style: TextStyle(color: Color(0xFF64748B)),
+              l10n.openingDocument,
+              style: const TextStyle(color: Color(0xFF64748B)),
             ),
           ],
         ),
@@ -335,7 +333,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
               ElevatedButton.icon(
                 onPressed: _initializeReader,
                 icon: const Icon(Icons.refresh),
-                label: const Text('Retry'),
+                label: Text(l10n.go),
               ),
             ],
           ),
@@ -347,20 +345,19 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
 
     return Column(
       children: [
-        // Status Alert Banners
         if (_sessionStatus == 'paused')
           Container(
             width: double.infinity,
             color: const Color(0xFFFEF3C7),
             padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
-            child: const Row(
+            child: Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Icon(Icons.pause_circle_outline, size: 18, color: Color(0xFFD97706)),
-                SizedBox(width: 8),
+                const Icon(Icons.pause_circle_outline, size: 18, color: Color(0xFFD97706)),
+                const SizedBox(width: 8),
                 Text(
-                  'Reading Session Paused by Host',
-                  style: TextStyle(
+                  l10n.readingSessionPaused,
+                  style: const TextStyle(
                     color: Color(0xFFB45309),
                     fontWeight: FontWeight.bold,
                     fontSize: 13,
@@ -374,14 +371,14 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
             width: double.infinity,
             color: const Color(0xFFF1F5F9),
             padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
-            child: const Row(
+            child: Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Icon(Icons.stop_circle_outlined, size: 18, color: Color(0xFF64748B)),
-                SizedBox(width: 8),
+                const Icon(Icons.stop_circle_outlined, size: 18, color: Color(0xFF64748B)),
+                const SizedBox(width: 8),
                 Text(
-                  'Reading Session Ended by Host',
-                  style: TextStyle(
+                  l10n.readingSessionEnded,
+                  style: const TextStyle(
                     color: Color(0xFF475569),
                     fontWeight: FontWeight.bold,
                     fontSize: 13,
@@ -390,31 +387,53 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
               ],
             ),
           ),
-
-        // Reading Progress Indicator Bar
         LinearProgressIndicator(
           value: _totalPages > 0 ? (_currentPage / _totalPages) : 0,
           backgroundColor: const Color(0xFFE2E8F0),
           color: isParticipantMode ? const Color(0xFF10B981) : const Color(0xFF2563EB),
           minHeight: 4,
         ),
-
-        // PDF Page Rendering View - REAL PDF rendering from local file
         Expanded(
-          child: PdfPageView(
-            filePath: widget.book.filePath,
-            pageNumber: _currentPage,
-            totalPages: _totalPages,
-            bookTitle: widget.book.title,
-            author: widget.book.author,
-          ),
+          child: _sessionStatus == 'ended'
+              ? Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24.0),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        const Icon(Icons.block_rounded, size: 48, color: Color(0xFF94A3B8)),
+                        const SizedBox(height: 12),
+                        Text(
+                          l10n.sessionEnded,
+                          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF64748B)),
+                          textAlign: TextAlign.center,
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          l10n.endedRoomHistoryOnly,
+                          style: const TextStyle(fontSize: 12, color: Color(0xFF94A3B8)),
+                          textAlign: TextAlign.center,
+                        ),
+                      ],
+                    ),
+                  ),
+                )
+              : PdfPageView(
+                  filePath: widget.book.filePath,
+                  pageNumber: _currentPage,
+                  totalPages: _totalPages,
+                  bookTitle: widget.book.title,
+                  author: widget.book.author,
+                ),
         ),
       ],
     );
   }
 
   Widget _buildBottomBar() {
+    final l10n = AppLocalizations.of(context);
     final isParticipantMode = !widget.isHost && widget.sessionId != null;
+    final isEnded = _sessionStatus == 'ended';
 
     return Container(
       color: Colors.white,
@@ -423,17 +442,14 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
         child: Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            // Previous Page Button
             IconButton(
               key: const Key('prev_page_button'),
               icon: const Icon(Icons.chevron_left_rounded, size: 32),
-              onPressed: !isParticipantMode && _currentPage > 1 ? previousPage : null,
-              tooltip: isParticipantMode ? 'Page controlled by Host' : 'Previous Page',
+              onPressed: !isParticipantMode && !isEnded && _currentPage > 1 ? previousPage : null,
+              tooltip: isParticipantMode ? l10n.waitingForParticipants : 'Previous Page',
             ),
-
-            // Page Number Display & Jump
             InkWell(
-              onTap: isParticipantMode ? null : _showJumpToPageDialog,
+              onTap: isParticipantMode || isEnded ? null : _showJumpToPageDialog,
               borderRadius: BorderRadius.circular(8),
               child: Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
@@ -446,8 +462,8 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                     ],
                     Text(
                       isParticipantMode
-                          ? 'Synced: Page $_currentPage of $_totalPages'
-                          : 'Page $_currentPage of $_totalPages',
+                          ? l10n.syncedPage(_currentPage, _totalPages)
+                          : l10n.pageOf(_currentPage, _totalPages),
                       key: const Key('page_number_display'),
                       style: TextStyle(
                         fontWeight: FontWeight.bold,
@@ -459,13 +475,11 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                 ),
               ),
             ),
-
-            // Next Page Button
             IconButton(
               key: const Key('next_page_button'),
               icon: const Icon(Icons.chevron_right_rounded, size: 32),
-              onPressed: !isParticipantMode && _currentPage < _totalPages ? nextPage : null,
-              tooltip: isParticipantMode ? 'Page controlled by Host' : 'Next Page',
+              onPressed: !isParticipantMode && !isEnded && _currentPage < _totalPages ? nextPage : null,
+              tooltip: isParticipantMode ? l10n.waitingForParticipants : 'Next Page',
             ),
           ],
         ),

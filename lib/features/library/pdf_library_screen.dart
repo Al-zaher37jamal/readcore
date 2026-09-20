@@ -1,6 +1,8 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:readmesh/core/di/injection.dart';
+import 'package:readmesh/core/errors/exceptions.dart';
+import 'package:readmesh/core/l10n/app_localizations.dart';
 import 'package:readmesh/data/database/app_database.dart';
 import 'package:readmesh/data/repositories/book_repository.dart';
 import 'package:readmesh/data/repositories/reading_progress_repository.dart';
@@ -11,7 +13,7 @@ import 'package:readmesh/features/profile/device_service.dart';
 import 'package:readmesh/features/reader/pdf_reader_screen.dart';
 
 /// Screen displaying the local library of imported PDF books with reading progress
-/// and import triggers.
+/// and import triggers. FIXED: DuplicateBookException friendly Arabic/English dialog.
 class PdfLibraryScreen extends StatefulWidget {
   final BookRepository? bookRepository;
   final ReadingProgressRepository? readingProgressRepository;
@@ -53,6 +55,7 @@ class _PdfLibraryScreenState extends State<PdfLibraryScreen> {
 
   /// Imports a sample PDF book into the local library for immediate reading.
   Future<void> _importSampleBook({int pageCount = 20, String title = 'Flutter Architecture Guide'}) async {
+    final l10n = AppLocalizations.of(context);
     setState(() {
       _isImporting = true;
     });
@@ -91,14 +94,26 @@ class _PdfLibraryScreenState extends State<PdfLibraryScreen> {
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Imported "$title" successfully!')),
+          SnackBar(content: Text(l10n.importSuccess(title))),
         );
+      }
+    } on DuplicateBookException catch (dupEx) {
+      // Friendly Arabic/English dialog, keep SHA-256 protection but don't show stack
+      if (mounted) {
+        final existing = await _bookRepo.getBookBySha256(dupEx.sha256);
+        await _showDuplicateDialog(existing);
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Import failed: $e'), backgroundColor: Colors.red),
-        );
+        if (e.toString().contains('already exists') || e is DuplicateBookException) {
+          // Fallback duplicate handling
+          final l10nInner = AppLocalizations.of(context);
+          await _showDuplicateDialog(null);
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('${l10n.importFailed}: $e'), backgroundColor: Colors.red),
+          );
+        }
       }
     } finally {
       if (mounted) {
@@ -109,19 +124,50 @@ class _PdfLibraryScreenState extends State<PdfLibraryScreen> {
     }
   }
 
+  Future<void> _showDuplicateDialog(Book? existingBook) async {
+    final l10n = AppLocalizations.of(context);
+    await showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(l10n.duplicateBookTitle),
+        content: Text(l10n.duplicateBookMessage),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text(l10n.ok),
+          ),
+          if (existingBook != null)
+            ElevatedButton(
+              onPressed: () {
+                Navigator.pop(ctx);
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => PdfReaderScreen(book: existingBook),
+                  ),
+                );
+              },
+              child: Text(l10n.openBookAction),
+            ),
+        ],
+      ),
+    );
+  }
+
   /// Deletes a book from SQLite and storage.
   Future<void> _deleteBook(Book book) async {
+    final l10n = AppLocalizations.of(context);
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Delete Book'),
-        content: Text('Are you sure you want to remove "${book.title}" from your library?'),
+        title: Text(l10n.deleteBookConfirmTitle),
+        content: Text(l10n.deleteBookConfirmBody(book.title)),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: Text(l10n.cancel)),
           TextButton(
             onPressed: () => Navigator.pop(ctx, true),
             style: TextButton.styleFrom(foregroundColor: Colors.red),
-            child: const Text('Delete'),
+            child: Text(l10n.delete),
           ),
         ],
       ),
@@ -132,7 +178,7 @@ class _PdfLibraryScreenState extends State<PdfLibraryScreen> {
       await _bookRepo.deleteBook(book.id);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Deleted "${book.title}"')),
+          SnackBar(content: Text(l10n.deleted(book.title))),
         );
       }
     }
@@ -140,9 +186,10 @@ class _PdfLibraryScreenState extends State<PdfLibraryScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context);
     return Scaffold(
       appBar: AppBar(
-        title: const Text('My PDF Library'),
+        title: Text(l10n.myPdfLibrary),
         actions: [
           if (_isImporting)
             const Center(
@@ -158,7 +205,7 @@ class _PdfLibraryScreenState extends State<PdfLibraryScreen> {
           else
             IconButton(
               icon: const Icon(Icons.add_rounded),
-              tooltip: 'Import Book',
+              tooltip: l10n.importBook,
               onPressed: () => _importSampleBook(),
             ),
         ],
@@ -190,6 +237,7 @@ class _PdfLibraryScreenState extends State<PdfLibraryScreen> {
   }
 
   Widget _buildEmptyState() {
+    final l10n = AppLocalizations.of(context);
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(32.0),
@@ -198,21 +246,21 @@ class _PdfLibraryScreenState extends State<PdfLibraryScreen> {
           children: [
             const Icon(Icons.library_books_rounded, size: 72, color: Color(0xFF94A3B8)),
             const SizedBox(height: 16),
-            const Text(
-              'No Books in Library',
-              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+            Text(
+              l10n.noBooksInLibrary,
+              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 8),
-            const Text(
-              'Import your PDF documents to start reading collaboratively.',
+            Text(
+              l10n.importHint,
               textAlign: TextAlign.center,
-              style: TextStyle(color: Color(0xFF64748B)),
+              style: const TextStyle(color: Color(0xFF64748B)),
             ),
             const SizedBox(height: 24),
             ElevatedButton.icon(
               onPressed: _isImporting ? null : () => _importSampleBook(),
               icon: const Icon(Icons.add_rounded),
-              label: const Text('Import Sample PDF'),
+              label: Text(l10n.importSamplePdf),
             ),
           ],
         ),
@@ -221,6 +269,7 @@ class _PdfLibraryScreenState extends State<PdfLibraryScreen> {
   }
 
   Widget _buildBookCard(Book book) {
+    final l10n = AppLocalizations.of(context);
     return Card(
       elevation: 1,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
@@ -232,7 +281,6 @@ class _PdfLibraryScreenState extends State<PdfLibraryScreen> {
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Book Icon Thumbnail
                 Container(
                   width: 52,
                   height: 64,
@@ -246,8 +294,6 @@ class _PdfLibraryScreenState extends State<PdfLibraryScreen> {
                   ),
                 ),
                 const SizedBox(width: 16),
-
-                // Title, Author, Metadata
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -271,18 +317,14 @@ class _PdfLibraryScreenState extends State<PdfLibraryScreen> {
                     ],
                   ),
                 ),
-
-                // Delete Book Action
                 IconButton(
                   icon: const Icon(Icons.delete_outline_rounded, color: Color(0xFF94A3B8)),
-                  tooltip: 'Delete Book',
+                  tooltip: l10n.deleteBook,
                   onPressed: () => _deleteBook(book),
                 ),
               ],
             ),
             const SizedBox(height: 12),
-
-            // Reading Progress Indicator Stream
             FutureBuilder<DeviceProfile>(
               future: _deviceService.getOrCreateCurrentProfile(),
               builder: (context, profileSnap) {
@@ -305,8 +347,8 @@ class _PdfLibraryScreenState extends State<PdfLibraryScreen> {
                           children: [
                             Text(
                               progress != null
-                                  ? 'Page $currentPage of $totalPages (${(pct * 100).toStringAsFixed(0)}%)'
-                                  : 'Not started yet',
+                                  ? l10n.pageOf(currentPage, totalPages) + ' (${(pct * 100).toStringAsFixed(0)}%)'
+                                  : l10n.notStartedYet,
                               style: const TextStyle(fontSize: 12, color: Color(0xFF64748B)),
                             ),
                           ],
@@ -328,8 +370,6 @@ class _PdfLibraryScreenState extends State<PdfLibraryScreen> {
               },
             ),
             const SizedBox(height: 12),
-
-            // Open Reader Action Button
             SizedBox(
               width: double.infinity,
               child: ElevatedButton.icon(
@@ -342,7 +382,7 @@ class _PdfLibraryScreenState extends State<PdfLibraryScreen> {
                   );
                 },
                 icon: const Icon(Icons.auto_stories_rounded, size: 18),
-                label: const Text('Read Now'),
+                label: Text(l10n.readNow),
               ),
             ),
           ],

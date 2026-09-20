@@ -1,26 +1,56 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:readmesh/core/constants/app_constants.dart';
 import 'package:readmesh/core/di/injection.dart';
+import 'package:readmesh/core/l10n/app_localizations.dart';
+import 'package:readmesh/core/l10n/language_service.dart';
 import 'package:readmesh/core/theme/app_theme.dart';
+import 'package:readmesh/data/repositories/kvs_repository.dart';
 import 'package:readmesh/features/library/pdf_library_screen.dart';
 import 'package:readmesh/features/room/rooms_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await setupLocator();
-  runApp(const ReadMeshApp());
+  final languageService = getIt<LanguageService>();
+  runApp(ReadMeshApp(languageService: languageService));
 }
 
 class ReadMeshApp extends StatelessWidget {
-  const ReadMeshApp({super.key});
+  final LanguageService languageService;
+  const ReadMeshApp({super.key, required this.languageService});
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: AppConstants.appName,
-      debugShowCheckedModeBanner: false,
-      theme: AppTheme.lightTheme,
-      home: const ReadMeshMainShell(),
+    return AnimatedBuilder(
+      animation: languageService,
+      builder: (context, _) {
+        final locale = languageService.currentLocale;
+        final isRTL = languageService.isRTL;
+        return MaterialApp(
+          title: AppConstants.appName,
+          debugShowCheckedModeBanner: false,
+          theme: AppTheme.lightTheme,
+          locale: locale,
+          supportedLocales: const [
+            Locale('ar'),
+            Locale('en'),
+          ],
+          localizationsDelegates: const [
+            AppLocalizationsDelegate(),
+            GlobalMaterialLocalizations.delegate,
+            GlobalWidgetsLocalizations.delegate,
+            GlobalCupertinoLocalizations.delegate,
+          ],
+          builder: (context, child) {
+            return Directionality(
+              textDirection: isRTL ? TextDirection.rtl : TextDirection.ltr,
+              child: child!,
+            );
+          },
+          home: const ReadMeshMainShell(),
+        );
+      },
     );
   }
 }
@@ -43,7 +73,18 @@ class _ReadMeshMainShellState extends State<ReadMeshMainShell> {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context);
     return Scaffold(
+      appBar: AppBar(
+        title: Text(l10n.appNameLabel),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.language_rounded),
+            tooltip: l10n.language,
+            onPressed: () => _showLanguageDialog(context),
+          ),
+        ],
+      ),
       body: IndexedStack(
         index: _currentIndex,
         children: _pages,
@@ -55,14 +96,60 @@ class _ReadMeshMainShellState extends State<ReadMeshMainShell> {
             _currentIndex = index;
           });
         },
-        items: const [
+        items: [
           BottomNavigationBarItem(
-            icon: Icon(Icons.menu_book_rounded),
-            label: 'Library',
+            icon: const Icon(Icons.menu_book_rounded),
+            label: l10n.library,
           ),
           BottomNavigationBarItem(
-            icon: Icon(Icons.meeting_room_rounded),
-            label: 'Rooms',
+            icon: const Icon(Icons.meeting_room_rounded),
+            label: l10n.rooms,
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showLanguageDialog(BuildContext context) {
+    final l10n = AppLocalizations.of(context);
+    final languageService = getIt<LanguageService>();
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(l10n.chooseLanguage),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            RadioListTile<String>(
+              title: Text(l10n.arabic),
+              subtitle: const Text('RTL'),
+              value: 'ar',
+              groupValue: languageService.currentCode,
+              onChanged: (val) {
+                if (val != null) {
+                  languageService.setLanguage(val);
+                  Navigator.pop(ctx);
+                }
+              },
+            ),
+            RadioListTile<String>(
+              title: Text(l10n.english),
+              subtitle: const Text('LTR'),
+              value: 'en',
+              groupValue: languageService.currentCode,
+              onChanged: (val) {
+                if (val != null) {
+                  languageService.setLanguage(val);
+                  Navigator.pop(ctx);
+                }
+              },
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text(l10n.cancel),
           ),
         ],
       ),

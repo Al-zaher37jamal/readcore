@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:readmesh/core/di/injection.dart';
+import 'package:readmesh/core/errors/exceptions.dart';
+import 'package:readmesh/core/l10n/app_localizations.dart';
 import 'package:readmesh/data/database/app_database.dart';
 import 'package:readmesh/data/repositories/book_repository.dart';
 import 'package:readmesh/data/repositories/session_repository.dart';
 import 'package:readmesh/features/lan/lan_discovery_service.dart';
+import 'package:readmesh/features/lan/lan_ip_helper.dart';
 import 'package:readmesh/features/room/local_room_service.dart';
 import 'package:readmesh/features/room/room_detail_screen.dart';
 
@@ -55,11 +58,12 @@ class _RoomsScreenState extends State<RoomsScreen> {
 
   /// Dialog to create a new reading room.
   Future<void> _showCreateRoomDialog() async {
+    final l10n = AppLocalizations.of(context);
     final books = await _bookRepo.getAllBooks();
     if (books.isEmpty) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Please import a PDF book in the Library before creating a room.')),
+          SnackBar(content: Text(l10n.pleaseImportBook)),
         );
       }
       return;
@@ -76,24 +80,24 @@ class _RoomsScreenState extends State<RoomsScreen> {
         return StatefulBuilder(
           builder: (context, setDialogState) {
             return AlertDialog(
-              title: const Text('Create Reading Room'),
+              title: Text(l10n.createReadingRoom),
               content: SingleChildScrollView(
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     TextField(
-                      decoration: const InputDecoration(
-                        labelText: 'Room Title',
-                        border: OutlineInputBorder(),
+                      decoration: InputDecoration(
+                        labelText: l10n.roomTitle,
+                        border: const OutlineInputBorder(),
                       ),
                       controller: TextEditingController(text: title),
                       onChanged: (val) => title = val,
                     ),
                     const SizedBox(height: 16),
                     DropdownButtonFormField<String>(
-                      decoration: const InputDecoration(
-                        labelText: 'Select Book',
-                        border: OutlineInputBorder(),
+                      decoration: InputDecoration(
+                        labelText: l10n.selectBook,
+                        border: const OutlineInputBorder(),
                       ),
                       value: selectedBookId,
                       items: books.map((b) {
@@ -119,11 +123,11 @@ class _RoomsScreenState extends State<RoomsScreen> {
               actions: [
                 TextButton(
                   onPressed: () => Navigator.pop(ctx, false),
-                  child: const Text('Cancel'),
+                  child: Text(l10n.cancel),
                 ),
                 ElevatedButton(
                   onPressed: () => Navigator.pop(ctx, true),
-                  child: const Text('Create Room'),
+                  child: Text(l10n.createRoom),
                 ),
               ],
             );
@@ -150,7 +154,7 @@ class _RoomsScreenState extends State<RoomsScreen> {
       } catch (e) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Failed to create room: $e'), backgroundColor: Colors.red),
+            SnackBar(content: Text('${l10n.failedToCreateRoom}: $e'), backgroundColor: Colors.red),
           );
         }
       }
@@ -158,108 +162,190 @@ class _RoomsScreenState extends State<RoomsScreen> {
   }
 
   /// Dialog to join an existing reading room with a session code.
+  /// FIXED: No default 127.0.0.1, validates IP, shows friendly messages Arabic/English.
   Future<void> _showJoinRoomDialog() async {
+    final l10n = AppLocalizations.of(context);
     final codeController = TextEditingController();
-    final ipController = TextEditingController(text: '127.0.0.1');
+    final ipController = TextEditingController(); // No default 127.0.0.1
 
-    final joined = await showDialog<bool>(
+    final joined = await showDialog<Map<String, String>>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Join Reading Room'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: codeController,
-              autofocus: true,
-              textCapitalization: TextCapitalization.characters,
-              decoration: const InputDecoration(
-                labelText: 'Room Code (e.g. RM-4821)',
-                border: OutlineInputBorder(),
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (context, setState) {
+            return AlertDialog(
+              title: Text(l10n.joinReadingRoom),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TextField(
+                      controller: codeController,
+                      autofocus: true,
+                      textCapitalization: TextCapitalization.characters,
+                      decoration: InputDecoration(
+                        labelText: l10n.roomCodeExample,
+                        border: const OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: ipController,
+                      decoration: InputDecoration(
+                        labelText: l10n.hostLanIpExample,
+                        hintText: l10n.hostLanIpHint,
+                        border: const OutlineInputBorder(),
+                        helperText: 'e.g. 192.168.0.73',
+                      ),
+                      keyboardType: TextInputType.number,
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      l10n.hostLanIpHint,
+                      style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
+                    ),
+                    StreamBuilder<List<DiscoveredRoom>>(
+                      stream: _discoveryService.roomsStream,
+                      builder: (context, snap) {
+                        final discovered = _discoveryService.discoveredRooms;
+                        if (discovered.isEmpty) return const SizedBox.shrink();
+                        return Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const SizedBox(height: 12),
+                            Align(
+                              alignment: Alignment.centerLeft,
+                              child: Text(l10n.discoveredRoomsOnLan,
+                                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                            ),
+                            const SizedBox(height: 6),
+                            Wrap(
+                              spacing: 6,
+                              children: discovered.map((r) => ActionChip(
+                                label: Text('${r.sessionId} - ${r.title} (${r.hostIp})'),
+                                onPressed: () {
+                                  codeController.text = r.sessionId;
+                                  ipController.text = r.hostIp;
+                                  setState(() {});
+                                },
+                              )).toList(),
+                            ),
+                          ],
+                        );
+                      },
+                    ),
+                  ],
+                ),
               ),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: ipController,
-              decoration: const InputDecoration(
-                labelText: 'Host LAN IP (e.g. 192.168.1.50)',
-                hintText: '127.0.0.1 for local device',
-                border: OutlineInputBorder(),
-              ),
-            ),
-            if (_discoveryService.discoveredRooms.isNotEmpty) ...[
-              const SizedBox(height: 12),
-              const Align(
-                alignment: Alignment.centerLeft,
-                child: Text('Discovered Rooms on LAN:', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-              ),
-              const SizedBox(height: 6),
-              ..._discoveryService.discoveredRooms.map((r) => ActionChip(
-                label: Text('${r.sessionId} - ${r.title} (${r.hostIp})'),
-                onPressed: () {
-                  codeController.text = r.sessionId;
-                  ipController.text = r.hostIp;
-                },
-              )),
-            ],
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Join'),
-          ),
-        ],
-      ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, null),
+                  child: Text(l10n.cancel),
+                ),
+                ElevatedButton(
+                  onPressed: () {
+                    Navigator.pop(ctx, {
+                      'code': codeController.text.trim(),
+                      'ip': ipController.text.trim(),
+                    });
+                  },
+                  child: Text(l10n.join),
+                ),
+              ],
+            );
+          },
+        );
+      },
     );
 
-    if (joined == true && codeController.text.trim().isNotEmpty) {
-      try {
-        final session = await _roomService.joinRoom(
-          sessionCode: codeController.text.trim(),
-        );
+    if (joined == null) return;
+    final code = (joined['code'] ?? '').trim();
+    final ip = (joined['ip'] ?? '').trim();
 
-        if (mounted) {
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (_) => RoomDetailScreen(
-                sessionId: session.id,
-                hostAddress: ipController.text.trim().isNotEmpty
-                    ? ipController.text.trim()
-                    : '127.0.0.1',
-              ),
+    // Validation
+    if (code.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(l10n.invalidCode), backgroundColor: Colors.red),
+        );
+      }
+      return;
+    }
+    if (ip.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(l10n.invalidIp), backgroundColor: Colors.red),
+        );
+      }
+      return;
+    }
+    // Validate IP – allow loopback only for local tests, but warn if remote expected
+    if (!LanIpHelper.isValidIPv4Any(ip)) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(l10n.invalidIp), backgroundColor: Colors.red),
+        );
+      }
+      return;
+    }
+    // For remote join, discourage loopback
+    if (LanIpHelper.isLoopback(ip)) {
+      // Allow but show hint – in real device test, user should use 192.168.x.x
+      // We still proceed for loopback tests
+    }
+
+    try {
+      final session = await _roomService.joinRoom(
+        sessionCode: code,
+      );
+
+      if (mounted) {
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => RoomDetailScreen(
+              sessionId: session.id,
+              hostAddress: ip,
             ),
-          );
-        }
-      } catch (e) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Join failed: $e'), backgroundColor: Colors.red),
-          );
+          ),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      String friendlyMessage;
+      if (e is NotFoundException) {
+        friendlyMessage = l10n.roomNotFound;
+      } else if (e is DatabaseOperationException && e.message.contains('ended')) {
+        friendlyMessage = l10n.cannotJoinEnded;
+      } else {
+        // Generic friendly
+        if (e.toString().contains('ended')) {
+          friendlyMessage = l10n.cannotJoinEnded;
+        } else {
+          friendlyMessage = l10n.roomNotFound;
         }
       }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(friendlyMessage), backgroundColor: Colors.red, duration: const Duration(seconds: 4)),
+      );
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context);
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Local Reading Rooms'),
+        title: Text(l10n.localReadingRooms),
         actions: [
           IconButton(
             icon: const Icon(Icons.login_rounded),
-            tooltip: 'Join with Code',
+            tooltip: l10n.joinWithCode,
             onPressed: _showJoinRoomDialog,
           ),
           IconButton(
             icon: const Icon(Icons.add_home_rounded),
-            tooltip: 'Create Room',
+            tooltip: l10n.createRoom,
             onPressed: _showCreateRoomDialog,
           ),
         ],
@@ -294,6 +380,7 @@ class _RoomsScreenState extends State<RoomsScreen> {
   }
 
   Widget _buildEmptyState() {
+    final l10n = AppLocalizations.of(context);
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(32.0),
@@ -302,15 +389,15 @@ class _RoomsScreenState extends State<RoomsScreen> {
           children: [
             const Icon(Icons.meeting_room_outlined, size: 72, color: Color(0xFF94A3B8)),
             const SizedBox(height: 16),
-            const Text(
-              'No Active Reading Rooms',
-              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+            Text(
+              l10n.noActiveReadingRooms,
+              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 8),
-            const Text(
-              'Create a reading room for a book or join one using a room code.',
+            Text(
+              l10n.createRoomHint,
               textAlign: TextAlign.center,
-              style: TextStyle(color: Color(0xFF64748B)),
+              style: const TextStyle(color: Color(0xFF64748B)),
             ),
             const SizedBox(height: 24),
             Row(
@@ -319,13 +406,13 @@ class _RoomsScreenState extends State<RoomsScreen> {
                 ElevatedButton.icon(
                   onPressed: _showCreateRoomDialog,
                   icon: const Icon(Icons.add_rounded),
-                  label: const Text('Create Room'),
+                  label: Text(l10n.createRoom),
                 ),
                 const SizedBox(width: 12),
                 OutlinedButton.icon(
                   onPressed: _showJoinRoomDialog,
                   icon: const Icon(Icons.login_rounded),
-                  label: const Text('Join Room'),
+                  label: Text(l10n.joinRoom),
                 ),
               ],
             ),
@@ -336,12 +423,20 @@ class _RoomsScreenState extends State<RoomsScreen> {
   }
 
   Widget _buildRoomCard(Session room) {
+    final l10n = AppLocalizations.of(context);
+    final isEnded = room.status == 'ended';
     return Card(
       elevation: 1,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       child: InkWell(
         borderRadius: BorderRadius.circular(12),
         onTap: () {
+          if (isEnded) {
+            // Show history only message but still allow view
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text(l10n.endedRoomHistoryOnly)),
+            );
+          }
           Navigator.push(
             context,
             MaterialPageRoute(
@@ -368,16 +463,16 @@ class _RoomsScreenState extends State<RoomsScreen> {
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                     decoration: BoxDecoration(
-                      color: const Color(0xFFEFF6FF),
+                      color: isEnded ? const Color(0xFFF1F5F9) : const Color(0xFFEFF6FF),
                       borderRadius: BorderRadius.circular(6),
-                      border: Border.all(color: const Color(0xFFBFDBFE)),
+                      border: Border.all(color: isEnded ? const Color(0xFFCBD5E1) : const Color(0xFFBFDBFE)),
                     ),
                     child: Text(
                       room.id,
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 12,
                         fontWeight: FontWeight.bold,
-                        color: Color(0xFF1D4ED8),
+                        color: isEnded ? const Color(0xFF64748B) : const Color(0xFF1D4ED8),
                       ),
                     ),
                   ),
@@ -397,9 +492,17 @@ class _RoomsScreenState extends State<RoomsScreen> {
                   ),
                   const SizedBox(width: 6),
                   Text(
-                    room.status.toUpperCase(),
-                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                    isEnded ? '${room.status.toUpperCase()} - ${l10n.historyOnly}' : room.status.toUpperCase(),
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                      color: isEnded ? const Color(0xFF64748B) : null,
+                    ),
                   ),
+                  if (isEnded) ...[
+                    const SizedBox(width: 8),
+                    Icon(Icons.history_rounded, size: 14, color: const Color(0xFF94A3B8)),
+                  ],
                 ],
               ),
             ],

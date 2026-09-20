@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'lan_ip_helper.dart';
 import 'lan_message.dart';
 
 /// Information about a connected participant on the Host's TCP server.
@@ -81,28 +82,22 @@ class LanHostServer {
       _participantsController.stream;
 
   /// Helper to discover the local device's IPv4 LAN address (non-loopback).
+  /// Prefer 192.168.x.x, 10.x.x.x, 172.16-31.x.x, exclude 127.0.0.1.
   static Future<String> getLocalIpAddress() async {
-    try {
-      final interfaces = await NetworkInterface.list(
-        type: InternetAddressType.IPv4,
-        includeLoopback: false,
-      );
-      for (final interface in interfaces) {
-        for (final addr in interface.addresses) {
-          if (!addr.isLoopback && addr.type == InternetAddressType.IPv4) {
-            return addr.address;
-          }
-        }
-      }
-    } catch (_) {}
-    return '127.0.0.1';
+    return LanIpHelper.getLocalLanIPv4();
+  }
+
+  /// New preferred helper – same as getLocalIpAddress but explicit name.
+  static Future<String> getLocalLanIPv4() async {
+    return LanIpHelper.getLocalLanIPv4();
   }
 
   /// Starts the TCP server socket.
+  /// Binds to InternetAddress.anyIPv4 to accept remote LAN connections, not loopback only.
   Future<void> start({InternetAddress? bindAddress}) async {
     if (_isRunning) return;
 
-    _localIp = await getLocalIpAddress();
+    _localIp = await getLocalLanIPv4();
     final address = bindAddress ?? InternetAddress.anyIPv4;
 
     _serverSocket = await ServerSocket.bind(address, requestedPort);

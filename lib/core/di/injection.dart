@@ -23,6 +23,7 @@ import 'package:readmesh/data/storage/storage_manager.dart';
 import 'package:readmesh/features/profile/device_service.dart';
 import 'package:readmesh/features/room/local_room_service.dart';
 import 'package:readmesh/features/lan/lan_discovery_service.dart';
+import 'package:readmesh/core/l10n/language_service.dart';
 
 final getIt = GetIt.instance;
 
@@ -125,6 +126,11 @@ Future<void> setupLocator({
   // Phase 4: LAN Discovery Service
   final discoveryService = LanDiscoveryService();
   getIt.registerSingleton<LanDiscoveryService>(discoveryService);
+
+  // Phase 5: Language Service (Arabic default RTL)
+  final languageService = LanguageService(kvsRepo);
+  await languageService.init();
+  getIt.registerSingleton<LanguageService>(languageService);
 }
 
 /// Disposes and clears all registered services from locator.

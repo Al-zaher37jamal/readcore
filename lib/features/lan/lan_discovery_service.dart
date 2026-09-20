@@ -26,10 +26,13 @@ class DiscoveredRoom {
       };
 
   factory DiscoveredRoom.fromJson(Map<String, dynamic> json) {
+    // For tests, allow 127.0.0.1 fallback, but production should use real LAN IP
+    final rawIp = json['hostIp'] as String? ?? '';
+    final safeIp = rawIp.isEmpty ? '127.0.0.1' : rawIp;
     return DiscoveredRoom(
       sessionId: json['sessionId'] as String? ?? '',
       title: json['title'] as String? ?? '',
-      hostIp: json['hostIp'] as String? ?? '127.0.0.1',
+      hostIp: safeIp,
       port: json['port'] as int? ?? 40404,
     );
   }

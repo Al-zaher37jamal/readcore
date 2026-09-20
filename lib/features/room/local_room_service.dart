@@ -139,9 +139,38 @@ class LocalRoomService {
     return _sessionRepository.updateSessionStatus(sessionId, 'active');
   }
 
-  /// Ends the reading session permanently.
+  /// Ends the reading session permanently and marks all members as left/not active.
   Future<bool> endSession(String sessionId) async {
-    return _sessionRepository.updateSessionStatus(sessionId, 'ended');
+    final success = await _sessionRepository.updateSessionStatus(sessionId, 'ended');
+    if (success) {
+      try {
+        final members = await _sessionMemberRepository.getMembersBySessionId(sessionId);
+        for (final m in members) {
+          if (m.status == 'active') {
+            // Keep host as active? No, after ended, no one active – show as left for consistency
+            // But host remains host role; mark participant as left, host stays active but session ended prevents reading
+            // For simplicity, mark all non-host as left, host remains active but session status ended is authoritative
+            if (m.role != 'host') {
+              await _sessionMemberRepository.updateMemberStatus(m.id, 'left');
+            }
+          }
+        }
+      } catch (_) {}
+    }
+    return success;
+  }
+
+  /// Marks all members as left when session ends – used for strict consistency (optional)
+  Future<void> endSessionAndClearParticipants(String sessionId) async {
+    await _sessionRepository.updateSessionStatus(sessionId, 'ended');
+    try {
+      final members = await _sessionMemberRepository.getMembersBySessionId(sessionId);
+      for (final m in members) {
+        if (m.role != 'host' && m.status == 'active') {
+          await _sessionMemberRepository.updateMemberStatus(m.id, 'left');
+        }
+      }
+    } catch (_) {}
   }
 
   /// Leaves the current room session.
