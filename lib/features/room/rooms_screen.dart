@@ -162,11 +162,11 @@ class _RoomsScreenState extends State<RoomsScreen> {
   }
 
   /// Dialog to join an existing reading room with a session code.
-  /// FIXED: No default 127.0.0.1, validates IP, shows friendly messages Arabic/English.
+  /// FIXED: Accepts 10.87.235.106 (10/8 private) and 10.87.235.106:40404 host:port, validates correctly.
   Future<void> _showJoinRoomDialog() async {
     final l10n = AppLocalizations.of(context);
     final codeController = TextEditingController();
-    final ipController = TextEditingController(); // No default 127.0.0.1
+    final ipController = TextEditingController();
 
     final joined = await showDialog<Map<String, String>>(
       context: context,
@@ -193,15 +193,15 @@ class _RoomsScreenState extends State<RoomsScreen> {
                       controller: ipController,
                       decoration: InputDecoration(
                         labelText: l10n.hostLanIpExample,
-                        hintText: l10n.hostLanIpHint,
+                        hintText: 'e.g. 10.87.235.106 or 192.168.0.73:40404',
                         border: const OutlineInputBorder(),
-                        helperText: 'e.g. 192.168.0.73',
+                        helperText: 'e.g. 10.87.235.106, 192.168.0.73, or 10.87.235.106:40404',
                       ),
-                      keyboardType: TextInputType.number,
+                      keyboardType: TextInputType.text,
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      l10n.hostLanIpHint,
+                      '${l10n.hostLanIpHint}\n${l10n.isArabic ? 'مثال: 10.87.235.106 أو 10.87.235.106:40404' : 'Example: 10.87.235.106 or 10.87.235.106:40404'}',
                       style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
                     ),
                     StreamBuilder<List<DiscoveredRoom>>(
@@ -222,10 +222,10 @@ class _RoomsScreenState extends State<RoomsScreen> {
                             Wrap(
                               spacing: 6,
                               children: discovered.map((r) => ActionChip(
-                                label: Text('${r.sessionId} - ${r.title} (${r.hostIp})'),
+                                label: Text('${r.sessionId} - ${r.title} (${r.hostIp}:${r.port})'),
                                 onPressed: () {
                                   codeController.text = r.sessionId;
-                                  ipController.text = r.hostIp;
+                                  ipController.text = '${r.hostIp}:${r.port}';
                                   setState(() {});
                                 },
                               )).toList(),
@@ -260,9 +260,8 @@ class _RoomsScreenState extends State<RoomsScreen> {
 
     if (joined == null) return;
     final code = (joined['code'] ?? '').trim();
-    final ip = (joined['ip'] ?? '').trim();
+    final ipInput = (joined['ip'] ?? '').trim();
 
-    // Validation
     if (code.isEmpty) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -271,7 +270,7 @@ class _RoomsScreenState extends State<RoomsScreen> {
       }
       return;
     }
-    if (ip.isEmpty) {
+    if (ipInput.isEmpty) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(l10n.invalidIp), backgroundColor: Colors.red),
@@ -279,7 +278,19 @@ class _RoomsScreenState extends State<RoomsScreen> {
       }
       return;
     }
-    // Validate IP – allow loopback only for local tests, but warn if remote expected
+    // Parse host input that may be bare IPv4 or IP:port - FIX for 10.87.235.106
+    final parsed = LanIpHelper.parseHostPort(ipInput, defaultPort: 40404);
+    if (parsed == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(l10n.invalidIp), backgroundColor: Colors.red),
+        );
+      }
+      return;
+    }
+    final ip = parsed.ip;
+    final port = parsed.port;
+
     if (!LanIpHelper.isValidIPv4Any(ip)) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -288,15 +299,19 @@ class _RoomsScreenState extends State<RoomsScreen> {
       }
       return;
     }
-    // For remote join, discourage loopback
-    if (LanIpHelper.isLoopback(ip)) {
-      // Allow but show hint – in real device test, user should use 192.168.x.x
-      // We still proceed for loopback tests
-    }
 
     try {
+      // For remote LAN join, pass remoteTitle if discovered
+      String? remoteTitle;
+      try {
+        final discovered = _discoveryService.discoveredRooms;
+        final match = discovered.where((r) => r.sessionId.toUpperCase() == code.toUpperCase()).toList();
+        if (match.isNotEmpty) remoteTitle = match.first.title;
+      } catch (_) {}
+
       final session = await _roomService.joinRoom(
         sessionCode: code,
+        remoteTitle: remoteTitle,
       );
 
       if (mounted) {
@@ -306,6 +321,7 @@ class _RoomsScreenState extends State<RoomsScreen> {
             builder: (_) => RoomDetailScreen(
               sessionId: session.id,
               hostAddress: ip,
+              port: port,
             ),
           ),
         );
@@ -318,7 +334,6 @@ class _RoomsScreenState extends State<RoomsScreen> {
       } else if (e is DatabaseOperationException && e.message.contains('ended')) {
         friendlyMessage = l10n.cannotJoinEnded;
       } else {
-        // Generic friendly
         if (e.toString().contains('ended')) {
           friendlyMessage = l10n.cannotJoinEnded;
         } else {
@@ -358,7 +373,6 @@ class _RoomsScreenState extends State<RoomsScreen> {
           }
 
           final allSessions = snapshot.data ?? [];
-          // Filter out internal solo reading sessions
           final rooms = allSessions.where((s) => !s.id.startsWith('solo_')).toList();
 
           if (rooms.isEmpty) {
@@ -432,7 +446,6 @@ class _RoomsScreenState extends State<RoomsScreen> {
         borderRadius: BorderRadius.circular(12),
         onTap: () {
           if (isEnded) {
-            // Show history only message but still allow view
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(content: Text(l10n.endedRoomHistoryOnly)),
             );

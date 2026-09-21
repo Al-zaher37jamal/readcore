@@ -2,6 +2,7 @@ import 'dart:math';
 import 'package:uuid/uuid.dart';
 import 'package:readmesh/core/errors/exceptions.dart';
 import 'package:readmesh/data/database/app_database.dart';
+import 'package:readmesh/data/repositories/book_repository.dart';
 import 'package:readmesh/data/repositories/session_member_repository.dart';
 import 'package:readmesh/data/repositories/session_repository.dart';
 import 'package:readmesh/features/profile/device_service.dart';
@@ -28,16 +29,19 @@ class LocalRoomService {
   final SessionRepository _sessionRepository;
   final SessionMemberRepository _sessionMemberRepository;
   final DeviceService _deviceService;
+  final BookRepository? _bookRepository;
   final Uuid _uuid;
 
   LocalRoomService({
     required SessionRepository sessionRepository,
     required SessionMemberRepository sessionMemberRepository,
     required DeviceService deviceService,
+    BookRepository? bookRepository,
     Uuid? uuid,
   })  : _sessionRepository = sessionRepository,
         _sessionMemberRepository = sessionMemberRepository,
         _deviceService = deviceService,
+        _bookRepository = bookRepository,
         _uuid = uuid ?? const Uuid();
 
   /// Generates a simple, human-friendly 6-character session code (e.g. "RM-4821").
@@ -79,16 +83,50 @@ class LocalRoomService {
   }
 
   /// Joins an existing reading room using its session code.
+  /// FIXED: Handles remote LAN join where session not in local DB (e.g. Host RM-2936 on 10.87.235.106).
+  /// If session not found locally, creates placeholder remote session using first available local book.
   Future<Session> joinRoom({
     required String sessionCode,
     String? customDisplayName,
     String? customDeviceId,
+    String? remoteTitle,
+    String? remoteHostDeviceId,
+    String? remoteBookId,
   }) async {
     final normalizedCode = sessionCode.trim().toUpperCase();
-    final session = await _sessionRepository.getSessionById(normalizedCode);
+    var session = await _sessionRepository.getSessionById(normalizedCode);
 
     if (session == null) {
-      throw NotFoundException('Room with code "$normalizedCode" was not found.');
+      // Remote LAN join: session not in local DB, create placeholder
+      // Required for 2-device real test: Host creates RM-2936, Participant DB doesn't have it
+      if (_bookRepository != null) {
+        try {
+          final books = await _bookRepository!.getAllBooks();
+          if (books.isEmpty) {
+            throw NotFoundException('Room with code "$normalizedCode" was not found. Please import a book first.');
+          }
+          String bookIdToUse = books.first.id;
+          if (remoteBookId != null) {
+            final exists = books.any((b) => b.id == remoteBookId);
+            if (exists) bookIdToUse = remoteBookId;
+          }
+          final title = remoteTitle ?? 'Remote Room $normalizedCode';
+          final hostId = remoteHostDeviceId ?? 'remote_host_$normalizedCode';
+
+          session = await _sessionRepository.createSession(
+            id: normalizedCode,
+            title: title,
+            hostDeviceId: hostId,
+            bookId: bookIdToUse,
+            status: 'active',
+          );
+        } catch (e) {
+          if (e is NotFoundException) rethrow;
+          throw NotFoundException('Room with code "$normalizedCode" was not found.');
+        }
+      } else {
+        throw NotFoundException('Room with code "$normalizedCode" was not found.');
+      }
     }
 
     if (session.status == 'ended') {
@@ -147,9 +185,6 @@ class LocalRoomService {
         final members = await _sessionMemberRepository.getMembersBySessionId(sessionId);
         for (final m in members) {
           if (m.status == 'active') {
-            // Keep host as active? No, after ended, no one active – show as left for consistency
-            // But host remains host role; mark participant as left, host stays active but session ended prevents reading
-            // For simplicity, mark all non-host as left, host remains active but session status ended is authoritative
             if (m.role != 'host') {
               await _sessionMemberRepository.updateMemberStatus(m.id, 'left');
             }

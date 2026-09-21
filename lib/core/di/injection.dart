@@ -120,6 +120,7 @@ Future<void> setupLocator({
     sessionRepository: sessionRepo,
     sessionMemberRepository: sessionMemberRepo,
     deviceService: deviceService,
+    bookRepository: bookRepo,
   );
   getIt.registerSingleton<LocalRoomService>(roomService);
 

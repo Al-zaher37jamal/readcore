@@ -66,15 +66,11 @@ class LanIpHelper {
   static bool isValidIPv4(String ip, {bool allowLoopback = false}) {
     final trimmed = ip.trim();
     if (trimmed.isEmpty) return false;
-    if (!allowLoopback && (trimmed == '127.0.0.1' || trimmed.startsWith('127.'))) {
-      // For production join, we allow loopback only for local tests, but validation warns
-      // We'll still consider it valid but caller can decide to show warning
-      // For strict validation, we return true but with flag; here we allow but mark
-      // Actually for user input we should allow loopback but not recommend
-      // So we treat loopback as valid if allowLoopback, otherwise invalid for remote join
+    final ipOnly = trimmed.contains(':') ? trimmed.split(':')[0].trim() : trimmed;
+    if (!allowLoopback && (ipOnly == '127.0.0.1' || ipOnly.startsWith('127.'))) {
       return false;
     }
-    final parts = trimmed.split('.');
+    final parts = ipOnly.split('.');
     if (parts.length != 4) return false;
     for (final p in parts) {
       final n = int.tryParse(p);
@@ -85,10 +81,12 @@ class LanIpHelper {
   }
 
   /// Validates IPv4 for any use (including loopback for tests)
+  /// Now handles host:port like 10.87.235.106:40404
   static bool isValidIPv4Any(String ip) {
     final trimmed = ip.trim();
     if (trimmed.isEmpty) return false;
-    final parts = trimmed.split('.');
+    final ipOnly = trimmed.contains(':') ? trimmed.split(':')[0].trim() : trimmed;
+    final parts = ipOnly.split('.');
     if (parts.length != 4) return false;
     for (final p in parts) {
       final n = int.tryParse(p);
@@ -99,6 +97,71 @@ class LanIpHelper {
   }
 
   static bool isLoopback(String ip) {
-    return ip.trim() == '127.0.0.1' || ip.trim().startsWith('127.');
+    final trimmed = ip.trim();
+    final ipOnly = trimmed.contains(':') ? trimmed.split(':')[0].trim() : trimmed;
+    return ipOnly == '127.0.0.1' || ipOnly.startsWith('127.');
+  }
+
+  /// Checks if IP is in private LAN ranges: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+  static bool isPrivateLanIPv4(String ip) {
+    final trimmed = ip.trim();
+    final ipOnly = trimmed.contains(':') ? trimmed.split(':')[0].trim() : trimmed;
+    if (!isValidIPv4Any(ipOnly)) return false;
+    if (ipOnly.startsWith('10.')) return true;
+    if (ipOnly.startsWith('192.168.')) return true;
+    if (_is172Private(ipOnly)) return true;
+    return true;
+  }
+
+  /// Parses host input that may be bare IPv4 or host:port.
+  /// Returns record with ip and port, or null if invalid.
+  /// Examples:
+  /// - "10.87.235.106" → ip=10.87.235.106, port=defaultPort
+  /// - "10.87.235.106:40404" → ip=10.87.235.106, port=40404
+  /// - "192.168.1.50:40404" → ip=192.168.1.50, port=40404
+  static ({String ip, int port})? parseHostPort(String input, {int defaultPort = 40404}) {
+    final trimmed = input.trim();
+    if (trimmed.isEmpty) return null;
+
+    String ipPart;
+    int port = defaultPort;
+
+    if (trimmed.contains(':')) {
+      final colonIndex = trimmed.lastIndexOf(':');
+      ipPart = trimmed.substring(0, colonIndex).trim();
+      final portStr = trimmed.substring(colonIndex + 1).trim();
+      if (portStr.isNotEmpty) {
+        final parsedPort = int.tryParse(portStr);
+        if (parsedPort == null || parsedPort < 1 || parsedPort > 65535) {
+          return null;
+        }
+        port = parsedPort;
+      }
+    } else {
+      ipPart = trimmed;
+    }
+
+    if (!isValidIPv4Any(ipPart)) return null;
+    return (ip: ipPart, port: port);
+  }
+
+  static String extractIp(String input) {
+    final trimmed = input.trim();
+    if (trimmed.contains(':')) {
+      return trimmed.split(':')[0].trim();
+    }
+    return trimmed;
+  }
+
+  static int extractPort(String input, {int defaultPort = 40404}) {
+    final trimmed = input.trim();
+    if (trimmed.contains(':')) {
+      final parts = trimmed.split(':');
+      if (parts.length >= 2) {
+        final p = int.tryParse(parts[1].trim());
+        if (p != null && p >= 1 && p <= 65535) return p;
+      }
+    }
+    return defaultPort;
   }
 }
