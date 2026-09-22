@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:readmesh/core/widgets/app_icon.dart';
 import 'package:readmesh/core/di/injection.dart';
 import 'package:readmesh/core/errors/exceptions.dart';
@@ -14,7 +15,7 @@ import 'package:readmesh/features/profile/device_service.dart';
 import 'package:readmesh/features/reader/pdf_reader_screen.dart';
 
 /// Screen displaying the local library of imported PDF books with reading progress
-/// and import triggers. FIXED: DuplicateBookException friendly Arabic/English dialog.
+/// and import triggers. FIXED: DuplicateBookException friendly Arabic/English dialog, real file picker.
 class PdfLibraryScreen extends StatefulWidget {
   final BookRepository? bookRepository;
   final ReadingProgressRepository? readingProgressRepository;
@@ -54,6 +55,82 @@ class _PdfLibraryScreenState extends State<PdfLibraryScreen> {
     _fileManager = widget.bookFileManager ?? getIt<BookFileManager>();
   }
 
+  /// Picks a real PDF file from Android file picker and imports via existing pipeline.
+  /// Uses existing BookFileManager, PdfImportPipeline, SQLite books table, SHA-256 dedup.
+  Future<void> _pickAndImportPdf() async {
+    final l10n = AppLocalizations.of(context);
+    setState(() {
+      _isImporting = true;
+    });
+
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['pdf'],
+        withData: false,
+        allowMultiple: false,
+      );
+
+      if (result == null || result.files.isEmpty) {
+        return;
+      }
+
+      final picked = result.files.first;
+      final path = picked.path;
+      if (path == null) {
+        throw Exception('Picked file path is null');
+      }
+
+      final sourceFile = File(path);
+      if (!await sourceFile.exists()) {
+        throw const NotFoundException('Selected PDF file does not exist.');
+      }
+
+      await _fileManager.ensureDirectoriesExist();
+
+      final fileName = picked.name;
+      final titleFromFile = fileName.toLowerCase().endsWith('.pdf')
+          ? fileName.substring(0, fileName.length - 4)
+          : fileName;
+
+      final book = await _importPipeline.importBook(
+        sourceFile: sourceFile,
+        title: titleFromFile,
+        author: 'Local Import',
+      );
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(l10n.importSuccess(book.title))),
+        );
+      }
+    } on DuplicateBookException catch (dupEx) {
+      if (mounted) {
+        final existing = await _bookRepo.getBookBySha256(dupEx.sha256);
+        await _showDuplicateDialog(existing);
+      }
+    } catch (e) {
+      if (mounted) {
+        final msg = e.toString();
+        if (msg.contains('already exists') || e is DuplicateBookException) {
+          await _showDuplicateDialog(null);
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+                content: Text('${l10n.importFailed}: $e'),
+                backgroundColor: Colors.red),
+          );
+        }
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isImporting = false;
+        });
+      }
+    }
+  }
+
   /// Imports a sample PDF book into the local library for immediate reading.
   Future<void> _importSampleBook({int pageCount = 20, String title = 'Flutter Architecture Guide'}) async {
     final l10n = AppLocalizations.of(context);
@@ -65,7 +142,6 @@ class _PdfLibraryScreenState extends State<PdfLibraryScreen> {
       await _fileManager.ensureDirectoriesExist();
       final tempFile = File(_fileManager.getTempFilePath('sample_${DateTime.now().millisecondsSinceEpoch}.pdf'));
 
-      // Create a valid sample PDF with requested page count
       final buffer = StringBuffer();
       buffer.write('%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n');
 
@@ -99,7 +175,6 @@ class _PdfLibraryScreenState extends State<PdfLibraryScreen> {
         );
       }
     } on DuplicateBookException catch (dupEx) {
-      // Friendly Arabic/English dialog, keep SHA-256 protection but don't show stack
       if (mounted) {
         final existing = await _bookRepo.getBookBySha256(dupEx.sha256);
         await _showDuplicateDialog(existing);
@@ -107,8 +182,6 @@ class _PdfLibraryScreenState extends State<PdfLibraryScreen> {
     } catch (e) {
       if (mounted) {
         if (e.toString().contains('already exists') || e is DuplicateBookException) {
-          // Fallback duplicate handling
-          final l10nInner = AppLocalizations.of(context);
           await _showDuplicateDialog(null);
         } else {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -155,7 +228,6 @@ class _PdfLibraryScreenState extends State<PdfLibraryScreen> {
     );
   }
 
-  /// Deletes a book from SQLite and storage.
   Future<void> _deleteBook(Book book) async {
     final l10n = AppLocalizations.of(context);
     final confirmed = await showDialog<bool>(
@@ -203,14 +275,29 @@ class _PdfLibraryScreenState extends State<PdfLibraryScreen> {
                 ),
               ),
             )
-          else
+          else ...[
             IconButton(
+              key: const Key('add_pdf_file_button_appbar'),
               icon: AppIcon.add(),
-              tooltip: l10n.importBook,
+              tooltip: l10n.addPdfFile,
+              onPressed: _pickAndImportPdf,
+            ),
+            IconButton(
+              icon: const Icon(Icons.description, size: 20),
+              tooltip: l10n.importSamplePdf,
               onPressed: () => _importSampleBook(),
             ),
+          ],
         ],
       ),
+      floatingActionButton: _isImporting
+          ? null
+          : FloatingActionButton.extended(
+              key: const Key('add_pdf_fab'),
+              onPressed: _pickAndImportPdf,
+              icon: AppIcon.add(),
+              label: Text(l10n.addPdfFile),
+            ),
       body: StreamBuilder<List<Book>>(
         stream: _bookRepo.watchAllBooks(),
         builder: (context, snapshot) {
@@ -225,10 +312,32 @@ class _PdfLibraryScreenState extends State<PdfLibraryScreen> {
 
           return ListView.separated(
             padding: const EdgeInsets.all(16),
-            itemCount: books.length,
+            itemCount: books.length + 1,
             separatorBuilder: (_, __) => const SizedBox(height: 12),
             itemBuilder: (context, index) {
-              final book = books[index];
+              if (index == 0) {
+                return Card(
+                  elevation: 0,
+                  color: const Color(0xFFEFF6FF),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    side: const BorderSide(color: Color(0xFFBFDBFE)),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.all(12.0),
+                    child: SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton.icon(
+                        key: const Key('add_pdf_file_button_list'),
+                        onPressed: _pickAndImportPdf,
+                        icon: AppIcon.add(),
+                        label: Text(l10n.addPdfFile),
+                      ),
+                    ),
+                  ),
+                );
+              }
+              final book = books[index - 1];
               return _buildBookCard(book);
             },
           );
@@ -258,9 +367,22 @@ class _PdfLibraryScreenState extends State<PdfLibraryScreen> {
               style: const TextStyle(color: Color(0xFF64748B)),
             ),
             const SizedBox(height: 24),
-            ElevatedButton.icon(
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                key: const Key('add_pdf_file_button_empty'),
+                onPressed: _isImporting ? null : _pickAndImportPdf,
+                icon: AppIcon.add(),
+                label: Text(l10n.addPdfFile),
+                style: ElevatedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
               onPressed: _isImporting ? null : () => _importSampleBook(),
-              icon: AppIcon.add(),
+              icon: AppIcon.pdf(size: 18),
               label: Text(l10n.importSamplePdf),
             ),
           ],

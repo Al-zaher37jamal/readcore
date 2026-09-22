@@ -15,7 +15,7 @@ import 'package:readmesh/features/reader/pdf_page_view.dart';
 /// Screen that opens an imported PDF, renders pages, tracks reading position,
 /// navigates across pages, and automatically saves/restores progress from SQLite.
 /// In a multi-device LAN session, synchronizes page turns and session lifecycle between Host and Participants.
-/// FIXED: Prevent reading after ended, localization, RTL.
+/// FIXED: Real PDF page synchronization Host 1→2→5→10 Participant visibly follows, pending jumps, totalPages sync, pause/resume/reconnect.
 class PdfReaderScreen extends StatefulWidget {
   final Book book;
   final String? sessionId;
@@ -77,20 +77,37 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
   void _setupLanSyncSubscriptions() {
     if (!widget.isHost && widget.participantClient != null) {
       _participantPageSub = widget.participantClient!.pageStream.listen((syncedPage) {
-        if (mounted && syncedPage != _currentPage && _sessionStatus != 'ended') {
+        if (!mounted || _sessionStatus == 'ended') return;
+        final client = widget.participantClient!;
+        final newTotal = client.totalPages;
+        final shouldUpdatePage = syncedPage != _currentPage;
+        final shouldUpdateTotal = newTotal != _totalPages && newTotal > 0;
+
+        if (shouldUpdatePage || shouldUpdateTotal) {
           setState(() {
-            _currentPage = syncedPage;
+            if (shouldUpdatePage) {
+              _currentPage = syncedPage.clamp(1, newTotal > 0 ? newTotal : _totalPages);
+            }
+            if (shouldUpdateTotal) {
+              _totalPages = newTotal;
+            }
           });
           _saveProgress();
         }
       });
 
       _participantStatusSub = widget.participantClient!.statusStream.listen((status) {
-        if (mounted) {
-          setState(() {
-            _sessionStatus = status;
-          });
-        }
+        if (!mounted) return;
+        final client = widget.participantClient!;
+        setState(() {
+          _sessionStatus = status;
+          if (client.totalPages > 0 && client.totalPages != _totalPages) {
+            _totalPages = client.totalPages;
+          }
+          if (client.currentPage != _currentPage && _sessionStatus != 'ended') {
+            _currentPage = client.currentPage.clamp(1, _totalPages);
+          }
+        });
       });
     }
   }
@@ -130,7 +147,6 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
           status: 'active',
         );
       } else {
-        // If session already ended, prevent reading
         if (existingSession.status == 'ended') {
           setState(() {
             _sessionStatus = 'ended';
@@ -152,12 +168,36 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
         _currentPage = 1;
       }
 
+      // For participant, prioritize authoritative LAN state over local saved progress
+      if (!widget.isHost && widget.participantClient != null) {
+        final lanPage = widget.participantClient!.currentPage;
+        final lanTotal = widget.participantClient!.totalPages;
+        if (lanPage > 0 && lanPage != _currentPage) {
+          _currentPage = lanPage.clamp(1, lanTotal > 0 ? lanTotal : _totalPages);
+        }
+        if (lanTotal > 0) {
+          _totalPages = lanTotal;
+        }
+      }
+
       await _saveProgress();
 
       if (mounted) {
         setState(() {
           _isLoading = false;
         });
+        if (!widget.isHost && widget.participantClient != null) {
+          final lanPage = widget.participantClient!.currentPage;
+          if (lanPage != _currentPage) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (mounted) {
+                setState(() {
+                  _currentPage = lanPage.clamp(1, _totalPages);
+                });
+              }
+            });
+          }
+        }
       }
     } catch (e) {
       if (mounted) {
@@ -425,6 +465,22 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                   totalPages: _totalPages,
                   bookTitle: widget.book.title,
                   author: widget.book.author,
+                  onPageChanged: (page) {
+                    if (widget.isHost && page != _currentPage && _sessionStatus != 'ended') {
+                      setState(() {
+                        _currentPage = page;
+                      });
+                      _saveProgress();
+                      widget.hostServer?.broadcastPageChange(_currentPage, _totalPages);
+                    } else if (!widget.isHost) {
+                      if (page != _currentPage) {
+                        setState(() {
+                          _currentPage = page;
+                        });
+                        _saveProgress();
+                      }
+                    }
+                  },
                 ),
         ),
       ],

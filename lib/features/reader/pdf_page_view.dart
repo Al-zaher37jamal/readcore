@@ -6,6 +6,7 @@ import 'package:pdfx/pdfx.dart';
 /// Widget responsible for rendering a REAL PDF document page from local storage
 /// using pdfx (Pdfium). Opens the actual file at [filePath] and renders
 /// the true PDF content (text/images/layout) for the given [pageNumber].
+/// FIXED: Handles pending page jumps for LAN sync (Host 1→2→5→10 Participant follows visibly).
 class PdfPageView extends StatefulWidget {
   final String filePath;
   final int pageNumber;
@@ -33,25 +34,30 @@ class _PdfPageViewState extends State<PdfPageView> {
   bool _isLoading = true;
   String? _errorMessage;
   int _actualPagesCount = 1;
+  int? _pendingPageJump;
 
   @override
   void initState() {
     super.initState();
     _actualPagesCount = widget.totalPages > 0 ? widget.totalPages : 1;
+    _pendingPageJump = widget.pageNumber;
     _loadDocument();
   }
 
   @override
   void didUpdateWidget(covariant PdfPageView oldWidget) {
     super.didUpdateWidget(oldWidget);
-    // If file path changed, reload document
     if (oldWidget.filePath != widget.filePath) {
+      _pendingPageJump = widget.pageNumber;
       _loadDocument();
       return;
     }
-    // If page number changed from parent (Host navigation or restore), jump
     if (oldWidget.pageNumber != widget.pageNumber) {
+      _pendingPageJump = widget.pageNumber;
       _jumpToPage(widget.pageNumber);
+    }
+    if (oldWidget.totalPages != widget.totalPages) {
+      _actualPagesCount = widget.totalPages > 0 ? widget.totalPages : _actualPagesCount;
     }
   }
 
@@ -71,15 +77,14 @@ class _PdfPageViewState extends State<PdfPageView> {
         return;
       }
 
-      // Open real PDF file from local storage
       final document = await PdfDocument.openFile(widget.filePath);
-
-      // Dispose old controller if exists
       _pdfController?.dispose();
+
+      final initialTarget = (_pendingPageJump ?? widget.pageNumber).clamp(1, document.pagesCount);
 
       final controller = PdfController(
         document: Future.value(document),
-        initialPage: widget.pageNumber.clamp(1, document.pagesCount),
+        initialPage: initialTarget,
       );
 
       if (mounted) {
@@ -87,6 +92,14 @@ class _PdfPageViewState extends State<PdfPageView> {
           _pdfController = controller;
           _actualPagesCount = document.pagesCount;
           _isLoading = false;
+        });
+
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && _pendingPageJump != null) {
+            final target = _pendingPageJump!.clamp(1, document.pagesCount);
+            _jumpToPage(target);
+            _pendingPageJump = null;
+          }
         });
       }
     } catch (e) {
@@ -100,18 +113,26 @@ class _PdfPageViewState extends State<PdfPageView> {
   }
 
   void _jumpToPage(int page) {
-    if (_pdfController == null) return;
     final target = page.clamp(1, _actualPagesCount);
-    try {
-      _pdfController!.jumpToPage(target);
-    } catch (_) {
-      // Fallback: try animate
-      try {
-        _pdfController!.animateToPage(target,
-            duration: const Duration(milliseconds: 250),
-            curve: Curves.ease);
-      } catch (_) {}
+    _pendingPageJump = target;
+
+    if (_pdfController == null) {
+      return;
     }
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _pdfController == null) return;
+      try {
+        _pdfController!.jumpToPage(target);
+        _pendingPageJump = null;
+      } catch (_) {
+        try {
+          _pdfController!.animateToPage(target,
+              duration: const Duration(milliseconds: 250), curve: Curves.ease);
+          _pendingPageJump = null;
+        } catch (_) {}
+      }
+    });
   }
 
   @override
@@ -166,14 +187,12 @@ class _PdfPageViewState extends State<PdfPageView> {
       return const Center(child: Text('PDF controller not initialized'));
     }
 
-    // Real PDF rendering using pdfx PdfView
     return LayoutBuilder(
       builder: (context, constraints) {
         return PdfView(
           controller: _pdfController!,
           scrollDirection: Axis.vertical,
           onPageChanged: (page) {
-            // Notify parent if needed (for progress tracking, but parent already manages)
             if (widget.onPageChanged != null) {
               widget.onPageChanged!(page);
             }
@@ -183,6 +202,14 @@ class _PdfPageViewState extends State<PdfPageView> {
               setState(() {
                 _actualPagesCount = document.pagesCount;
               });
+              if (_pendingPageJump != null) {
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (mounted) {
+                    _jumpToPage(_pendingPageJump!);
+                    _pendingPageJump = null;
+                  }
+                });
+              }
             }
           },
           onDocumentError: (error) {

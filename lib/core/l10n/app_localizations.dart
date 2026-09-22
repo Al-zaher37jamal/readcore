@@ -30,6 +30,8 @@ class AppLocalizations {
       'importHint': 'Import your PDF documents to start reading collaboratively.',
       'importSamplePdf': 'Import Sample PDF',
       'importBook': 'Import Book',
+      'addPdfFile': 'Add PDF',
+      'addPdfFileDesc': 'Add PDF File',
       'readNow': 'Read Now',
       'readAsHost': 'Read as Host',
       'readAsParticipant': 'Read as Participant',
@@ -134,6 +136,8 @@ class AppLocalizations {
       'importHint': 'استورد مستندات PDF لبدء القراءة التعاونية.',
       'importSamplePdf': 'استيراد PDF تجريبي',
       'importBook': 'استيراد كتاب',
+      'addPdfFile': 'إضافة ملف PDF',
+      'addPdfFileDesc': 'إضافة ملف PDF',
       'readNow': 'اقرأ الآن',
       'readAsHost': 'اقرأ كمضيف',
       'readAsParticipant': 'اقرأ كمشارك',
@@ -256,6 +260,8 @@ class AppLocalizations {
   String get importHint => _get('importHint');
   String get importSamplePdf => _get('importSamplePdf');
   String get importBook => _get('importBook');
+  String get addPdfFile => _get('addPdfFile');
+  String get addPdfFileDesc => _get('addPdfFileDesc');
   String get readNow => _get('readNow');
   String get readAsHost => _get('readAsHost');
   String get readAsParticipant => _get('readAsParticipant');
