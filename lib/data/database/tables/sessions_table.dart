@@ -14,6 +14,15 @@ class SessionsTable extends Table {
   DateTimeColumn get createdAt => dateTime()();
   DateTimeColumn get updatedAt => dateTime()();
 
+  // Phase 6: Session History and Resumable Local Reading
+  // Minimal additional columns for saved/ended lifecycle and resume
+  IntColumn get lastPage => integer().nullable()();
+  IntColumn get totalPages => integer().nullable()();
+  DateTimeColumn get lastActivityAt => dateTime().nullable()();
+  TextColumn get sessionType => text().withDefault(const Constant('solo'))();
+  BoolColumn get timerEnabled => boolean().withDefault(const Constant(false))();
+  BoolColumn get statsEnabled => boolean().withDefault(const Constant(false))();
+
   @override
   Set<Column> get primaryKey => {id};
 }

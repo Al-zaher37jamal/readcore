@@ -9,6 +9,7 @@ import 'package:readmesh/core/theme/app_theme.dart';
 import 'package:readmesh/data/repositories/kvs_repository.dart';
 import 'package:readmesh/features/library/pdf_library_screen.dart';
 import 'package:readmesh/features/room/rooms_screen.dart';
+import 'package:readmesh/features/session_history/my_sessions_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -70,6 +71,7 @@ class _ReadMeshMainShellState extends State<ReadMeshMainShell> {
   final _pages = const [
     PdfLibraryScreen(),
     RoomsScreen(),
+    MySessionsScreen(),
   ];
 
   @override
@@ -105,6 +107,10 @@ class _ReadMeshMainShellState extends State<ReadMeshMainShell> {
           BottomNavigationBarItem(
             icon: AppIcon.group(),
             label: l10n.rooms,
+          ),
+          BottomNavigationBarItem(
+            icon: AppIcon.history(),
+            label: l10n.mySessions,
           ),
         ],
       ),

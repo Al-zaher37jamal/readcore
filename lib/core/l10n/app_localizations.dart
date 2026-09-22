@@ -2,6 +2,7 @@ import 'package:flutter/widgets.dart';
 
 /// Simple localization without codegen, Arabic default RTL, English LTR.
 /// Covers all hard-coded strings audited from Rooms, Library, Reader, LAN.
+/// Phase 6: Session History and Resumable Local Reading
 class AppLocalizations {
   final String localeCode; // 'ar' or 'en'
 
@@ -24,6 +25,7 @@ class AppLocalizations {
       'appName': 'ReadMesh',
       'library': 'Library',
       'rooms': 'Rooms',
+      'mySessions': 'My Sessions',
       'localReadingRooms': 'Local Reading Rooms',
       'myPdfLibrary': 'My PDF Library',
       'noBooksInLibrary': 'No Books in Library',
@@ -38,7 +40,7 @@ class AppLocalizations {
       'openBook': 'Open Book',
       'deleteBook': 'Delete Book',
       'deleteBookConfirmTitle': 'Delete Book',
-      'deleteBookConfirmBody': 'Are you sure you want to remove "{title}" from your library?',
+      'deleteBookConfirmBody': 'Are you sure you want to remove \"{title}\" from your library?',
       'cancel': 'Cancel',
       'delete': 'Delete',
       'ok': 'OK',
@@ -69,7 +71,7 @@ class AppLocalizations {
       'joinFailed': 'Join failed',
       'roomCodeLabel': 'ROOM CODE',
       'copyCode': 'Copy Code',
-      'copiedToClipboard': 'Copied code "{code}" to clipboard',
+      'copiedToClipboard': 'Copied code \"{code}\" to clipboard',
       'connected': 'connected',
       'disconnected': 'Disconnected',
       'connecting': 'Connecting',
@@ -113,9 +115,9 @@ class AppLocalizations {
       'duplicateBookMessage': 'This book is already in your library.',
       'duplicateBookMessageAr': 'هذا الكتاب موجود بالفعل في مكتبتك.',
       'openBookAction': 'Open Book',
-      'importSuccess': 'Imported "{title}" successfully!',
+      'importSuccess': 'Imported \"{title}\" successfully!',
       'importFailed': 'Import failed',
-      'deleted': 'Deleted "{title}"',
+      'deleted': 'Deleted \"{title}\"',
       'language': 'Language',
       'arabic': 'العربية',
       'english': 'English',
@@ -125,11 +127,42 @@ class AppLocalizations {
       'historyOnly': 'History Only',
       'endedRoomHistoryOnly': 'ENDED - History only, not joinable',
       'pleaseCheckRoomCodeAndHostIp': 'Room not found. Please check the room code and Host IP.',
+      // Phase 6
+      'whatWouldYouDo': 'What would you like to do?',
+      'saveAndLeave': 'Save and Leave',
+      'endReadingSession': 'End Reading Session',
+      'noSavedSessions': 'No saved sessions',
+      'noSavedSessionsHint': 'Your saved and ended sessions will appear here. Read a book and use Save and Leave to keep it.',
+      'pageXofY': 'Page {current} of {total}',
+      'lastReading': 'Last reading: {time}',
+      'lastReadingPrefix': 'Last reading',
+      'saved': 'Saved',
+      'savedStatus': 'Saved',
+      'confirmEndTitle': 'End Reading Session',
+      'confirmEndBody': 'Ending the reading session will disconnect participants and close the current session. The session history will remain saved and can be deleted later.',
+      'confirmDeleteTitle': 'Delete Session History',
+      'confirmDeleteBody': 'Do you want to delete this session history?',
+      'deleteSession': 'Delete Session',
+      'resumeUpper': 'Resume',
+      'deleteHistory': 'Delete',
+      'sinceMinutes': '{count} min ago',
+      'sinceHours': '{count} hours ago',
+      'sinceDays': '{count} days ago',
+      'justNow': 'Just now',
+      'timerEnabled': 'Enable Reading Timer',
+      'statsEnabled': 'Show End Session Stats',
+      'enableTimerLabel': 'Enable Reading Timer',
+      'enableStatsLabel': 'Show End Session Stats',
+      'continueReading': 'Continue Reading',
+      'groupSession': 'Group Session',
+      'soloSession': 'Solo Reading',
+      'endedNotJoinable': 'Ended - not joinable, history viewable',
     },
     'ar': {
       'appName': 'ReadMesh',
       'library': 'المكتبة',
       'rooms': 'الغرف',
+      'mySessions': 'جلساتي',
       'localReadingRooms': 'غرف القراءة المحلية',
       'myPdfLibrary': 'مكتبتي',
       'noBooksInLibrary': 'لا توجد كتب في المكتبة',
@@ -144,7 +177,7 @@ class AppLocalizations {
       'openBook': 'فتح الكتاب',
       'deleteBook': 'حذف الكتاب',
       'deleteBookConfirmTitle': 'حذف الكتاب',
-      'deleteBookConfirmBody': 'هل أنت متأكد من حذف "{title}" من مكتبتك؟',
+      'deleteBookConfirmBody': 'هل أنت متأكد من حذف \"{title}\" من مكتبتك؟',
       'cancel': 'إلغاء',
       'delete': 'حذف',
       'ok': 'موافق',
@@ -175,7 +208,7 @@ class AppLocalizations {
       'joinFailed': 'فشل الانضمام',
       'roomCodeLabel': 'رمز الغرفة',
       'copyCode': 'نسخ الرمز',
-      'copiedToClipboard': 'تم نسخ الرمز "{code}" إلى الحافظة',
+      'copiedToClipboard': 'تم نسخ الرمز \"{code}\" إلى الحافظة',
       'connected': 'متصل',
       'disconnected': 'غير متصل',
       'connecting': 'جاري الاتصال',
@@ -219,9 +252,9 @@ class AppLocalizations {
       'duplicateBookMessage': 'هذا الكتاب موجود بالفعل في مكتبتك.',
       'duplicateBookMessageAr': 'هذا الكتاب موجود بالفعل في مكتبتك.',
       'openBookAction': 'فتح الكتاب',
-      'importSuccess': 'تم استيراد "{title}" بنجاح!',
+      'importSuccess': 'تم استيراد \"{title}\" بنجاح!',
       'importFailed': 'فشل الاستيراد',
-      'deleted': 'تم حذف "{title}"',
+      'deleted': 'تم حذف \"{title}\"',
       'language': 'اللغة',
       'arabic': 'العربية',
       'english': 'English',
@@ -231,6 +264,36 @@ class AppLocalizations {
       'historyOnly': 'سجل فقط',
       'endedRoomHistoryOnly': 'منتهية - سجل فقط، غير قابلة للانضمام',
       'pleaseCheckRoomCodeAndHostIp': 'الغرفة غير موجودة. تحقق من رمز الغرفة وعنوان المضيف.',
+      // Phase 6
+      'whatWouldYouDo': 'ماذا تريد أن تفعل؟',
+      'saveAndLeave': 'حفظ ومغادرة',
+      'endReadingSession': 'إنهاء جلسة القراءة',
+      'noSavedSessions': 'لا توجد جلسات محفوظة',
+      'noSavedSessionsHint': 'ستظهر جلساتك المحفوظة والمنتهية هنا. اقرأ كتابًا واستخدم حفظ ومغادرة للاحتفاظ به.',
+      'pageXofY': 'الصفحة {current} من {total}',
+      'lastReading': 'آخر قراءة: {time}',
+      'lastReadingPrefix': 'آخر قراءة',
+      'saved': 'محفوظة',
+      'savedStatus': 'محفوظة',
+      'confirmEndTitle': 'إنهاء جلسة القراءة',
+      'confirmEndBody': 'سيؤدي إنهاء جلسة القراءة إلى قطع اتصال المشاركين وإغلاق الجلسة الحالية. سيبقى سجل الجلسة محفوظًا ويمكن حذفه لاحقًا.',
+      'confirmDeleteTitle': 'حذف سجل الجلسة',
+      'confirmDeleteBody': 'هل تريد حذف سجل هذه الجلسة؟',
+      'deleteSession': 'حذف الجلسة',
+      'resumeUpper': 'استئناف',
+      'deleteHistory': 'حذف',
+      'sinceMinutes': 'منذ {count} دقيقة',
+      'sinceHours': 'منذ {count} ساعة',
+      'sinceDays': 'منذ {count} أيام',
+      'justNow': 'الآن',
+      'timerEnabled': 'تفعيل مؤقت القراءة',
+      'statsEnabled': 'عرض إحصائية نهاية الجلسة',
+      'enableTimerLabel': 'تفعيل مؤقت القراءة',
+      'enableStatsLabel': 'عرض إحصائية نهاية الجلسة',
+      'continueReading': 'متابعة القراءة',
+      'groupSession': 'جلسة جماعية',
+      'soloSession': 'قراءة فردية',
+      'endedNotJoinable': 'منتهية - غير قابلة للانضمام، يمكن عرض السجل فقط',
     },
   };
 
@@ -250,10 +313,11 @@ class AppLocalizations {
     return value;
   }
 
-  // Convenience getters for audited hard-coded strings
+  // Convenience getters
   String get appNameLabel => _get('appName');
   String get library => _get('library');
   String get rooms => _get('rooms');
+  String get mySessions => _get('mySessions');
   String get localReadingRooms => _get('localReadingRooms');
   String get myPdfLibrary => _get('myPdfLibrary');
   String get noBooksInLibrary => _get('noBooksInLibrary');
@@ -352,6 +416,37 @@ class AppLocalizations {
   String get chooseLanguage => _get('chooseLanguage');
   String get historyOnly => _get('historyOnly');
   String get endedRoomHistoryOnly => _get('endedRoomHistoryOnly');
+
+  // Phase 6 getters
+  String get whatWouldYouDo => _get('whatWouldYouDo');
+  String get saveAndLeave => _get('saveAndLeave');
+  String get endReadingSession => _get('endReadingSession');
+  String get noSavedSessions => _get('noSavedSessions');
+  String get noSavedSessionsHint => _get('noSavedSessionsHint');
+  String pageXofY(int current, int total) => tr('pageXofY', params: {'current': current.toString(), 'total': total.toString()});
+  String lastReading(String time) => tr('lastReading', params: {'time': time});
+  String get lastReadingPrefix => _get('lastReadingPrefix');
+  String get saved => _get('saved');
+  String get savedStatus => _get('savedStatus');
+  String get confirmEndTitle => _get('confirmEndTitle');
+  String get confirmEndBody => _get('confirmEndBody');
+  String get confirmDeleteTitle => _get('confirmDeleteTitle');
+  String get confirmDeleteBody => _get('confirmDeleteBody');
+  String get deleteSession => _get('deleteSession');
+  String get resumeUpper => _get('resumeUpper');
+  String get deleteHistory => _get('deleteHistory');
+  String sinceMinutes(int count) => tr('sinceMinutes', params: {'count': count.toString()});
+  String sinceHours(int count) => tr('sinceHours', params: {'count': count.toString()});
+  String sinceDays(int count) => tr('sinceDays', params: {'count': count.toString()});
+  String get justNow => _get('justNow');
+  String get timerEnabledLabel => _get('timerEnabled');
+  String get statsEnabledLabel => _get('statsEnabled');
+  String get enableTimerLabel => _get('enableTimerLabel');
+  String get enableStatsLabel => _get('enableStatsLabel');
+  String get continueReading => _get('continueReading');
+  String get groupSession => _get('groupSession');
+  String get soloSession => _get('soloSession');
+  String get endedNotJoinable => _get('endedNotJoinable');
 }
 
 class AppLocalizationsDelegate extends LocalizationsDelegate<AppLocalizations> {

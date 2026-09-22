@@ -14,8 +14,10 @@ import 'package:readmesh/features/reader/pdf_page_view.dart';
 
 /// Screen that opens an imported PDF, renders pages, tracks reading position,
 /// navigates across pages, and automatically saves/restores progress from SQLite.
-/// In a multi-device LAN session, synchronizes page turns and session lifecycle between Host and Participants.
-/// FIXED: Real PDF page synchronization Host 1→2→5→10 Participant visibly follows, pending jumps, totalPages sync, pause/resume/reconnect.
+/// Phase 6: Session History and Resumable Local Reading
+/// - Save and Leave vs End Reading Session dialog
+/// - Auto-save reading position on page change
+/// - Resume restores PDF + saved page + metadata + fresh LAN server
 class PdfReaderScreen extends StatefulWidget {
   final Book book;
   final String? sessionId;
@@ -59,6 +61,13 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
   late String _activeSessionId;
   String _deviceId = '';
   String _sessionStatus = 'active';
+
+  // Phase 6: timer and stats
+  bool _timerEnabled = false;
+  bool _statsEnabled = false;
+  Timer? _readingTimer;
+  int _elapsedSeconds = 0;
+  DateTime? _sessionStartTime;
 
   @override
   void initState() {
@@ -116,6 +125,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
   void dispose() {
     _participantPageSub?.cancel();
     _participantStatusSub?.cancel();
+    _readingTimer?.cancel();
     super.dispose();
   }
 
@@ -151,8 +161,21 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
           setState(() {
             _sessionStatus = 'ended';
           });
+        } else {
+          setState(() {
+            _sessionStatus = existingSession.status;
+          });
         }
       }
+
+      // Phase 6: load timer/stats flags
+      try {
+        final flags = await _sessionRepo.getSessionFlags(_activeSessionId);
+        if (flags != null) {
+          _timerEnabled = flags['timerEnabled'] as bool? ?? false;
+          _statsEnabled = flags['statsEnabled'] as bool? ?? false;
+        }
+      } catch (_) {}
 
       ReadingProgress? savedProgress;
       if (widget.sessionId != null) {
@@ -164,6 +187,9 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
           savedProgress.currentPage >= 1 &&
           savedProgress.currentPage <= _totalPages) {
         _currentPage = savedProgress.currentPage;
+        if (savedProgress.totalPages > 0) {
+          _totalPages = savedProgress.totalPages;
+        }
       } else {
         _currentPage = 1;
       }
@@ -181,6 +207,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
       }
 
       await _saveProgress();
+      _startTimerIfEnabled();
 
       if (mounted) {
         setState(() {
@@ -209,6 +236,24 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
     }
   }
 
+  void _startTimerIfEnabled() {
+    if (!_timerEnabled) return;
+    _sessionStartTime = DateTime.now();
+    _readingTimer?.cancel();
+    _readingTimer = Timer.periodic(const Duration(seconds: 1), (t) {
+      if (!mounted) return;
+      setState(() {
+        _elapsedSeconds++;
+      });
+    });
+  }
+
+  String _formatElapsed(int seconds) {
+    final m = seconds ~/ 60;
+    final s = seconds % 60;
+    return '${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
+  }
+
   Future<void> _saveProgress() async {
     if (_deviceId.isEmpty) return;
     try {
@@ -221,6 +266,10 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
         currentPage: _currentPage,
         totalPages: _totalPages,
       );
+      // Phase 6: also update session last page for My Sessions card
+      try {
+        await _sessionRepo.updateSessionLastPage(_activeSessionId, _currentPage, _totalPages);
+      } catch (_) {}
     } catch (_) {}
   }
 
@@ -303,38 +352,230 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
     );
   }
 
-  @override
-  Widget build(BuildContext context) {
+  // Phase 6: Leave dialog "ماذا تريد أن تفعل؟"
+  Future<bool> _showLeaveDialog() async {
     final l10n = AppLocalizations.of(context);
-    return Scaffold(
-      backgroundColor: const Color(0xFFF8FAFC),
-      appBar: AppBar(
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+    final result = await showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        key: const Key('leave_session_dialog'),
+        title: Text(l10n.whatWouldYouDo),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Text(
-              widget.book.title,
-              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-            if (widget.sessionId != null)
-              Text(
-                '${l10n.roomCode}: ${widget.sessionId}',
-                style: const TextStyle(fontSize: 11, color: Color(0xFF10B981)),
+            if (_timerEnabled)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: Row(
+                  children: [
+                    AppIcon.history(size: 18, color: const Color(0xFF2563EB)),
+                    const SizedBox(width: 6),
+                    Text('${l10n.timerEnabledLabel}: ${_formatElapsed(_elapsedSeconds)}',
+                        style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+                  ],
+                ),
               ),
+            ElevatedButton.icon(
+              key: const Key('save_and_leave_button'),
+              onPressed: () => Navigator.pop(ctx, 'save'),
+              icon: AppIcon.bookmark(size: 20),
+              label: Text(l10n.saveAndLeave),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF2563EB),
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 12),
+              ),
+            ),
+            const SizedBox(height: 8),
+            ElevatedButton.icon(
+              key: const Key('end_reading_session_button'),
+              onPressed: () => Navigator.pop(ctx, 'end'),
+              icon: AppIcon.stop(size: 20),
+              label: Text(l10n.endReadingSession),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFEF4444),
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 12),
+              ),
+            ),
+            const SizedBox(height: 8),
+            OutlinedButton(
+              key: const Key('cancel_leave_button'),
+              onPressed: () => Navigator.pop(ctx, 'cancel'),
+              child: Text(l10n.cancel),
+            ),
           ],
         ),
+      ),
+    );
+
+    if (result == 'save') {
+      await _handleSaveAndLeave();
+      return true; // allow pop
+    } else if (result == 'end') {
+      final confirmed = await _showEndConfirmation();
+      if (confirmed) {
+        await _handleEndReadingSession();
+        return true;
+      }
+      return false;
+    }
+    return false; // cancel
+  }
+
+  Future<bool> _showEndConfirmation() async {
+    final l10n = AppLocalizations.of(context);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        key: const Key('confirm_end_dialog'),
+        title: Text(l10n.confirmEndTitle),
+        content: Text(l10n.confirmEndBody),
         actions: [
-          IconButton(
-            icon: AppIcon.bookmark(),
-            tooltip: l10n.jumpToPage,
-            onPressed: _isLoading || _errorMessage != null || _sessionStatus == 'ended' ? null : _showJumpToPageDialog,
+          TextButton(
+            key: const Key('cancel_end_button'),
+            onPressed: () => Navigator.pop(ctx, false),
+            child: Text(l10n.cancel),
+          ),
+          ElevatedButton(
+            key: const Key('confirm_end_button'),
+            onPressed: () => Navigator.pop(ctx, true),
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFEF4444)),
+            child: Text(l10n.endReadingSession),
           ),
         ],
       ),
-      body: _buildBody(),
-      bottomNavigationBar: _isLoading || _errorMessage != null ? null : _buildBottomBar(),
+    );
+    return confirmed == true;
+  }
+
+  Future<void> _handleSaveAndLeave() async {
+    try {
+      await _saveProgress();
+      await _sessionRepo.saveAndLeaveSession(_activeSessionId, lastPage: _currentPage, totalPages: _totalPages);
+      // For group host, disconnect participants cleanly but keep history
+      if (widget.isHost && widget.hostServer != null) {
+        try {
+          await widget.hostServer!.stop();
+        } catch (_) {}
+      }
+      if (!widget.isHost && widget.participantClient != null) {
+        try {
+          await widget.participantClient!.disconnect();
+        } catch (_) {}
+      }
+      _readingTimer?.cancel();
+    } catch (_) {}
+  }
+
+  Future<void> _handleEndReadingSession() async {
+    try {
+      await _saveProgress();
+      await _sessionRepo.endReadingSession(_activeSessionId);
+      // Disconnect participants and stop sync
+      if (widget.isHost && widget.hostServer != null) {
+        try {
+          widget.hostServer!.broadcastSessionEnded();
+          await widget.hostServer!.stop();
+        } catch (_) {}
+      }
+      if (!widget.isHost && widget.participantClient != null) {
+        try {
+          await widget.participantClient!.disconnect();
+        } catch (_) {}
+      }
+      _readingTimer?.cancel();
+      if (_statsEnabled && mounted) {
+        await _showEndStats();
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _showEndStats() async {
+    final l10n = AppLocalizations.of(context);
+    await showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(l10n.statsEnabledLabel),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('${l10n.pageOf(_currentPage, _totalPages)}'),
+            const SizedBox(height: 8),
+            if (_timerEnabled) Text('${l10n.timerEnabledLabel}: ${_formatElapsed(_elapsedSeconds)}'),
+            const SizedBox(height: 8),
+            Text('${l10n.lastReadingPrefix}: ${DateTime.now().toString().substring(0, 19)}'),
+          ],
+        ),
+        actions: [
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text(l10n.ok),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context);
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) async {
+        if (didPop) return;
+        if (_sessionStatus == 'ended') {
+          if (mounted) Navigator.pop(context);
+          return;
+        }
+        final shouldPop = await _showLeaveDialog();
+        if (shouldPop && mounted) {
+          Navigator.pop(context);
+        }
+      },
+      child: Scaffold(
+        backgroundColor: const Color(0xFFF8FAFC),
+        appBar: AppBar(
+          title: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                widget.book.title,
+                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              if (widget.sessionId != null)
+                Text(
+                  '${l10n.roomCode}: ${widget.sessionId}',
+                  style: const TextStyle(fontSize: 11, color: Color(0xFF10B981)),
+                ),
+            ],
+          ),
+          actions: [
+            if (_timerEnabled)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 16),
+                child: Center(
+                  child: Text(
+                    _formatElapsed(_elapsedSeconds),
+                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF2563EB)),
+                  ),
+                ),
+              ),
+            IconButton(
+              icon: AppIcon.bookmark(),
+              tooltip: l10n.jumpToPage,
+              onPressed: _isLoading || _errorMessage != null || _sessionStatus == 'ended' ? null : _showJumpToPageDialog,
+            ),
+          ],
+        ),
+        body: _buildBody(),
+        bottomNavigationBar: _isLoading || _errorMessage != null ? null : _buildBottomBar(),
+      ),
     );
   }
 
@@ -455,6 +696,18 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                           style: const TextStyle(fontSize: 12, color: Color(0xFF94A3B8)),
                           textAlign: TextAlign.center,
                         ),
+                        if (_statsEnabled) ...[
+                          const SizedBox(height: 16),
+                          Text(
+                            '${l10n.pageOf(_currentPage, _totalPages)}',
+                            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
+                          ),
+                          if (_timerEnabled)
+                            Text(
+                              '${l10n.timerEnabledLabel}: ${_formatElapsed(_elapsedSeconds)}',
+                              style: const TextStyle(fontSize: 12, color: Color(0xFF64748B)),
+                            ),
+                        ],
                       ],
                     ),
                   ),

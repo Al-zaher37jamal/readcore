@@ -72,10 +72,12 @@ class _RoomsScreenState extends State<RoomsScreen> {
 
     String title = 'Collaborative Reading Session';
     String selectedBookId = books.first.id;
+    bool timerEnabled = false;
+    bool statsEnabled = false;
 
     if (!mounted) return;
 
-    final created = await showDialog<bool>(
+    final created = await showDialog<Map<String, dynamic>>(
       context: context,
       builder: (ctx) {
         return StatefulBuilder(
@@ -118,16 +120,43 @@ class _RoomsScreenState extends State<RoomsScreen> {
                         }
                       },
                     ),
+                    const SizedBox(height: 16),
+                    CheckboxListTile(
+                      title: Text(l10n.enableTimerLabel),
+                      value: timerEnabled,
+                      onChanged: (v) {
+                        setDialogState(() {
+                          timerEnabled = v ?? false;
+                        });
+                      },
+                      contentPadding: EdgeInsets.zero,
+                      controlAffinity: ListTileControlAffinity.leading,
+                    ),
+                    CheckboxListTile(
+                      title: Text(l10n.enableStatsLabel),
+                      value: statsEnabled,
+                      onChanged: (v) {
+                        setDialogState(() {
+                          statsEnabled = v ?? false;
+                        });
+                      },
+                      contentPadding: EdgeInsets.zero,
+                      controlAffinity: ListTileControlAffinity.leading,
+                    ),
                   ],
                 ),
               ),
               actions: [
                 TextButton(
-                  onPressed: () => Navigator.pop(ctx, false),
+                  onPressed: () => Navigator.pop(ctx, null),
                   child: Text(l10n.cancel),
                 ),
                 ElevatedButton(
-                  onPressed: () => Navigator.pop(ctx, true),
+                  onPressed: () => Navigator.pop(ctx, {
+                    'create': true,
+                    'timer': timerEnabled,
+                    'stats': statsEnabled,
+                  }),
                   child: Text(l10n.createRoom),
                 ),
               ],
@@ -137,12 +166,18 @@ class _RoomsScreenState extends State<RoomsScreen> {
       },
     );
 
-    if (created == true) {
+    if (created != null && created['create'] == true) {
       try {
         final session = await _roomService.createRoom(
           title: title,
           bookId: selectedBookId,
         );
+
+        // Phase 6: save timer/stats flags
+        try {
+          final sessionRepo = _sessionRepo;
+          await sessionRepo.updateSessionFlags(session.id, timerEnabled: created['timer'] as bool, statsEnabled: created['stats'] as bool);
+        } catch (_) {}
 
         if (mounted) {
           Navigator.push(

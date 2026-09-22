@@ -2,7 +2,7 @@ import 'package:drift/drift.dart';
 import 'package:readmesh/core/errors/exceptions.dart';
 
 class SchemaMigrations {
-  static const int currentSchemaVersion = 2;
+  static const int currentSchemaVersion = 3;
 
   /// Builds the Drift migration strategy with startup integrity checks,
   /// WAL configuration, foreign key enforcement, and version upgrades.
@@ -15,11 +15,20 @@ class SchemaMigrations {
         await m.createAll();
         // Create indexes on initial creation as well
         await _createVersion2Indexes(db);
+        // Phase 6: ensure new columns exist even if g.dart not regenerated yet
+        await _migrateToVersion3(db);
+        await _createVersion3Indexes(db);
       },
       onUpgrade: (Migrator m, int from, int to) async {
         if (from < 2) {
           // Upgrade step from v1 to v2: create performance indices
           await _createVersion2Indexes(db);
+        }
+        if (from < 3) {
+          // Phase 6: Session History and Resumable Local Reading
+          // Add new columns to sessions table for saved/ended lifecycle
+          await _migrateToVersion3(db);
+          await _createVersion3Indexes(db);
         }
       },
       beforeOpen: (OpeningDetails details) async {
@@ -88,6 +97,41 @@ class SchemaMigrations {
     );
     await db.customStatement(
       'CREATE INDEX IF NOT EXISTS idx_notes_book_page ON notes(book_id, page_number);',
+    );
+  }
+
+  static Future<void> _migrateToVersion3(GeneratedDatabase db) async {
+    // Add Phase 6 columns to sessions table if they don't exist
+    // Use ALTER TABLE with IF NOT EXISTS workaround via try-catch
+    try {
+      await db.customStatement('ALTER TABLE sessions ADD COLUMN last_page INTEGER;');
+    } catch (_) {}
+    try {
+      await db.customStatement('ALTER TABLE sessions ADD COLUMN total_pages INTEGER;');
+    } catch (_) {}
+    try {
+      await db.customStatement('ALTER TABLE sessions ADD COLUMN last_activity_at INTEGER;');
+    } catch (_) {}
+    try {
+      await db.customStatement("ALTER TABLE sessions ADD COLUMN session_type TEXT NOT NULL DEFAULT 'solo';");
+    } catch (_) {}
+    try {
+      await db.customStatement('ALTER TABLE sessions ADD COLUMN timer_enabled INTEGER NOT NULL DEFAULT 0 CHECK (timer_enabled IN (0,1));');
+    } catch (_) {}
+    try {
+      await db.customStatement('ALTER TABLE sessions ADD COLUMN stats_enabled INTEGER NOT NULL DEFAULT 0 CHECK (stats_enabled IN (0,1));');
+    } catch (_) {}
+  }
+
+  static Future<void> _createVersion3Indexes(GeneratedDatabase db) async {
+    await db.customStatement(
+      'CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);',
+    );
+    await db.customStatement(
+      'CREATE INDEX IF NOT EXISTS idx_sessions_last_activity ON sessions(last_activity_at);',
+    );
+    await db.customStatement(
+      'CREATE INDEX IF NOT EXISTS idx_sessions_type ON sessions(session_type);',
     );
   }
 }
