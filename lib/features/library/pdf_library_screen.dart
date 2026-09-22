@@ -282,11 +282,6 @@ class _PdfLibraryScreenState extends State<PdfLibraryScreen> {
               tooltip: l10n.addPdfFile,
               onPressed: _pickAndImportPdf,
             ),
-            IconButton(
-              icon: const Icon(Icons.description, size: 20),
-              tooltip: l10n.importSamplePdf,
-              onPressed: () => _importSampleBook(),
-            ),
           ],
         ],
       ),
@@ -298,50 +293,75 @@ class _PdfLibraryScreenState extends State<PdfLibraryScreen> {
               icon: AppIcon.add(),
               label: Text(l10n.addPdfFile),
             ),
-      body: StreamBuilder<List<Book>>(
-        stream: _bookRepo.watchAllBooks(),
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
-          }
-
-          final books = snapshot.data ?? [];
-          if (books.isEmpty) {
-            return _buildEmptyState();
-          }
-
-          return ListView.separated(
-            padding: const EdgeInsets.all(16),
-            itemCount: books.length + 1,
-            separatorBuilder: (_, __) => const SizedBox(height: 12),
-            itemBuilder: (context, index) {
-              if (index == 0) {
-                return Card(
-                  elevation: 0,
-                  color: const Color(0xFFEFF6FF),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    side: const BorderSide(color: Color(0xFFBFDBFE)),
+      body: Column(
+        children: [
+          // ALWAYS VISIBLE primary Add PDF header - impossible to miss on real device
+          Container(
+            width: double.infinity,
+            color: const Color(0xFFEFF6FF),
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                ElevatedButton.icon(
+                  key: const Key('add_pdf_file_button_header'),
+                  onPressed: _isImporting ? null : _pickAndImportPdf,
+                  icon: AppIcon.add(),
+                  label: Text(
+                    l10n.addPdfFile,
+                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
                   ),
-                  child: Padding(
-                    padding: const EdgeInsets.all(12.0),
-                    child: SizedBox(
-                      width: double.infinity,
-                      child: ElevatedButton.icon(
-                        key: const Key('add_pdf_file_button_list'),
-                        onPressed: _pickAndImportPdf,
-                        icon: AppIcon.add(),
-                        label: Text(l10n.addPdfFile),
-                      ),
-                    ),
+                  style: ElevatedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    backgroundColor: const Color(0xFF2563EB),
                   ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  l10n.isArabic ? 'اختر ملف PDF من التحميلات أو المستندات' : 'Pick PDF from Downloads/Documents/Files',
+                  style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
+                  textAlign: TextAlign.center,
+                ),
+              ],
+            ),
+          ),
+          Expanded(
+            child: StreamBuilder<List<Book>>(
+              stream: _bookRepo.watchAllBooks(),
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+
+                final books = snapshot.data ?? [];
+                if (books.isEmpty) {
+                  return _buildEmptyState();
+                }
+
+                return ListView.separated(
+                  padding: const EdgeInsets.all(16),
+                  itemCount: books.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 12),
+                  itemBuilder: (context, index) {
+                    final book = books[index];
+                    return _buildBookCard(book);
+                  },
                 );
-              }
-              final book = books[index - 1];
-              return _buildBookCard(book);
-            },
-          );
-        },
+              },
+            ),
+          ),
+          // APK verification footer
+          Container(
+            width: double.infinity,
+            color: const Color(0xFFF1F5F9),
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: Text(
+              'ReadMesh v1.0.0+1 - Add PDF Fix 5e3a198 - file_picker pdfx 2.8.0',
+              style: const TextStyle(fontSize: 9, color: Color(0xFF94A3B8)),
+              textAlign: TextAlign.center,
+            ),
+          ),
+        ],
       ),
     );
   }
