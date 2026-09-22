@@ -5138,7 +5138,7 @@ final class $$BooksTableTableReferences
 
   $$SessionsTableTableProcessedTableManager get sessionsTableRefs {
     final manager = $$SessionsTableTableTableManager($_db, $_db.sessionsTable)
-        .filter((f) => f.bookId.id.sqlEquals($_itemColumn<String>('id')!));
+        .filter((f) => f.bookId.id($_item.id));
 
     final cache = $_typedResult.readTableOrNull(_sessionsTableRefsTable($_db));
     return ProcessedTableManager(
@@ -5155,7 +5155,7 @@ final class $$BooksTableTableReferences
       get readingProgressTableRefs {
     final manager =
         $$ReadingProgressTableTableTableManager($_db, $_db.readingProgressTable)
-            .filter((f) => f.bookId.id.sqlEquals($_itemColumn<String>('id')!));
+            .filter((f) => f.bookId.id($_item.id));
 
     final cache =
         $_typedResult.readTableOrNull(_readingProgressTableRefsTable($_db));
@@ -5172,7 +5172,7 @@ final class $$BooksTableTableReferences
   $$PageActivityTableTableProcessedTableManager get pageActivityTableRefs {
     final manager =
         $$PageActivityTableTableTableManager($_db, $_db.pageActivityTable)
-            .filter((f) => f.bookId.id.sqlEquals($_itemColumn<String>('id')!));
+            .filter((f) => f.bookId.id($_item.id));
 
     final cache =
         $_typedResult.readTableOrNull(_pageActivityTableRefsTable($_db));
@@ -5188,7 +5188,7 @@ final class $$BooksTableTableReferences
 
   $$NotesTableTableProcessedTableManager get notesTableRefs {
     final manager = $$NotesTableTableTableManager($_db, $_db.notesTable)
-        .filter((f) => f.bookId.id.sqlEquals($_itemColumn<String>('id')!));
+        .filter((f) => f.bookId.id($_item.id));
 
     final cache = $_typedResult.readTableOrNull(_notesTableRefsTable($_db));
     return ProcessedTableManager(
@@ -5589,7 +5589,7 @@ class $$BooksTableTableTableManager extends RootTableManager<
               getPrefetchedDataCallback: (items) async {
                 return [
                   if (sessionsTableRefs)
-                    await $_getPrefetchedData<Book, $BooksTableTable, Session>(
+                    await $_getPrefetchedData(
                         currentTable: table,
                         referencedTable: $$BooksTableTableReferences
                             ._sessionsTableRefsTable(db),
@@ -5601,8 +5601,7 @@ class $$BooksTableTableTableManager extends RootTableManager<
                             referencedItems.where((e) => e.bookId == item.id),
                         typedResults: items),
                   if (readingProgressTableRefs)
-                    await $_getPrefetchedData<Book, $BooksTableTable,
-                            ReadingProgress>(
+                    await $_getPrefetchedData(
                         currentTable: table,
                         referencedTable: $$BooksTableTableReferences
                             ._readingProgressTableRefsTable(db),
@@ -5614,8 +5613,7 @@ class $$BooksTableTableTableManager extends RootTableManager<
                             referencedItems.where((e) => e.bookId == item.id),
                         typedResults: items),
                   if (pageActivityTableRefs)
-                    await $_getPrefetchedData<Book, $BooksTableTable,
-                            PageActivity>(
+                    await $_getPrefetchedData(
                         currentTable: table,
                         referencedTable: $$BooksTableTableReferences
                             ._pageActivityTableRefsTable(db),
@@ -5627,7 +5625,7 @@ class $$BooksTableTableTableManager extends RootTableManager<
                             referencedItems.where((e) => e.bookId == item.id),
                         typedResults: items),
                   if (notesTableRefs)
-                    await $_getPrefetchedData<Book, $BooksTableTable, Note>(
+                    await $_getPrefetchedData(
                         currentTable: table,
                         referencedTable: $$BooksTableTableReferences
                             ._notesTableRefsTable(db),
@@ -5694,10 +5692,8 @@ final class $$SessionsTableTableReferences
           $_aliasNameGenerator(db.sessionsTable.bookId, db.booksTable.id));
 
   $$BooksTableTableProcessedTableManager get bookId {
-    final $_column = $_itemColumn<String>('book_id')!;
-
     final manager = $$BooksTableTableTableManager($_db, $_db.booksTable)
-        .filter((f) => f.id.sqlEquals($_column));
+        .filter((f) => f.id($_item.bookId));
     final item = $_typedResult.readTableOrNull(_bookIdTable($_db));
     if (item == null) return manager;
     return ProcessedTableManager(
@@ -5711,9 +5707,9 @@ final class $$SessionsTableTableReferences
                   db.sessionsTable.id, db.sessionMembersTable.sessionId));
 
   $$SessionMembersTableTableProcessedTableManager get sessionMembersTableRefs {
-    final manager = $$SessionMembersTableTableTableManager(
-            $_db, $_db.sessionMembersTable)
-        .filter((f) => f.sessionId.id.sqlEquals($_itemColumn<String>('id')!));
+    final manager =
+        $$SessionMembersTableTableTableManager($_db, $_db.sessionMembersTable)
+            .filter((f) => f.sessionId.id($_item.id));
 
     final cache =
         $_typedResult.readTableOrNull(_sessionMembersTableRefsTable($_db));
@@ -5728,9 +5724,9 @@ final class $$SessionsTableTableReferences
                   db.sessionsTable.id, db.sessionEventsTable.sessionId));
 
   $$SessionEventsTableTableProcessedTableManager get sessionEventsTableRefs {
-    final manager = $$SessionEventsTableTableTableManager(
-            $_db, $_db.sessionEventsTable)
-        .filter((f) => f.sessionId.id.sqlEquals($_itemColumn<String>('id')!));
+    final manager =
+        $$SessionEventsTableTableTableManager($_db, $_db.sessionEventsTable)
+            .filter((f) => f.sessionId.id($_item.id));
 
     final cache =
         $_typedResult.readTableOrNull(_sessionEventsTableRefsTable($_db));
@@ -5746,7 +5742,7 @@ final class $$SessionsTableTableReferences
 
   $$OutboxTableTableProcessedTableManager get outboxTableRefs {
     final manager = $$OutboxTableTableTableManager($_db, $_db.outboxTable)
-        .filter((f) => f.sessionId.id.sqlEquals($_itemColumn<String>('id')!));
+        .filter((f) => f.sessionId.id($_item.id));
 
     final cache = $_typedResult.readTableOrNull(_outboxTableRefsTable($_db));
     return ProcessedTableManager(
@@ -5761,9 +5757,9 @@ final class $$SessionsTableTableReferences
 
   $$ReadingProgressTableTableProcessedTableManager
       get readingProgressTableRefs {
-    final manager = $$ReadingProgressTableTableTableManager(
-            $_db, $_db.readingProgressTable)
-        .filter((f) => f.sessionId.id.sqlEquals($_itemColumn<String>('id')!));
+    final manager =
+        $$ReadingProgressTableTableTableManager($_db, $_db.readingProgressTable)
+            .filter((f) => f.sessionId.id($_item.id));
 
     final cache =
         $_typedResult.readTableOrNull(_readingProgressTableRefsTable($_db));
@@ -5782,7 +5778,7 @@ final class $$SessionsTableTableReferences
       get participantReadingTimeTableRefs {
     final manager = $$ParticipantReadingTimeTableTableTableManager(
             $_db, $_db.participantReadingTimeTable)
-        .filter((f) => f.sessionId.id.sqlEquals($_itemColumn<String>('id')!));
+        .filter((f) => f.sessionId.id($_item.id));
 
     final cache = $_typedResult
         .readTableOrNull(_participantReadingTimeTableRefsTable($_db));
@@ -5797,9 +5793,9 @@ final class $$SessionsTableTableReferences
                   db.sessionsTable.id, db.pageActivityTable.sessionId));
 
   $$PageActivityTableTableProcessedTableManager get pageActivityTableRefs {
-    final manager = $$PageActivityTableTableTableManager(
-            $_db, $_db.pageActivityTable)
-        .filter((f) => f.sessionId.id.sqlEquals($_itemColumn<String>('id')!));
+    final manager =
+        $$PageActivityTableTableTableManager($_db, $_db.pageActivityTable)
+            .filter((f) => f.sessionId.id($_item.id));
 
     final cache =
         $_typedResult.readTableOrNull(_pageActivityTableRefsTable($_db));
@@ -5815,7 +5811,7 @@ final class $$SessionsTableTableReferences
 
   $$MessagesTableTableProcessedTableManager get messagesTableRefs {
     final manager = $$MessagesTableTableTableManager($_db, $_db.messagesTable)
-        .filter((f) => f.sessionId.id.sqlEquals($_itemColumn<String>('id')!));
+        .filter((f) => f.sessionId.id($_item.id));
 
     final cache = $_typedResult.readTableOrNull(_messagesTableRefsTable($_db));
     return ProcessedTableManager(
@@ -6401,8 +6397,7 @@ class $$SessionsTableTableTableManager extends RootTableManager<
               getPrefetchedDataCallback: (items) async {
                 return [
                   if (sessionMembersTableRefs)
-                    await $_getPrefetchedData<Session, $SessionsTableTable,
-                            SessionMember>(
+                    await $_getPrefetchedData(
                         currentTable: table,
                         referencedTable: $$SessionsTableTableReferences
                             ._sessionMembersTableRefsTable(db),
@@ -6414,8 +6409,7 @@ class $$SessionsTableTableTableManager extends RootTableManager<
                                 .where((e) => e.sessionId == item.id),
                         typedResults: items),
                   if (sessionEventsTableRefs)
-                    await $_getPrefetchedData<Session, $SessionsTableTable,
-                            SessionEvent>(
+                    await $_getPrefetchedData(
                         currentTable: table,
                         referencedTable: $$SessionsTableTableReferences
                             ._sessionEventsTableRefsTable(db),
@@ -6427,8 +6421,7 @@ class $$SessionsTableTableTableManager extends RootTableManager<
                                 .where((e) => e.sessionId == item.id),
                         typedResults: items),
                   if (outboxTableRefs)
-                    await $_getPrefetchedData<Session, $SessionsTableTable,
-                            OutboxEntry>(
+                    await $_getPrefetchedData(
                         currentTable: table,
                         referencedTable: $$SessionsTableTableReferences
                             ._outboxTableRefsTable(db),
@@ -6440,8 +6433,7 @@ class $$SessionsTableTableTableManager extends RootTableManager<
                                 .where((e) => e.sessionId == item.id),
                         typedResults: items),
                   if (readingProgressTableRefs)
-                    await $_getPrefetchedData<Session, $SessionsTableTable,
-                            ReadingProgress>(
+                    await $_getPrefetchedData(
                         currentTable: table,
                         referencedTable: $$SessionsTableTableReferences
                             ._readingProgressTableRefsTable(db),
@@ -6453,8 +6445,7 @@ class $$SessionsTableTableTableManager extends RootTableManager<
                                 .where((e) => e.sessionId == item.id),
                         typedResults: items),
                   if (participantReadingTimeTableRefs)
-                    await $_getPrefetchedData<Session, $SessionsTableTable,
-                            ParticipantReadingTime>(
+                    await $_getPrefetchedData(
                         currentTable: table,
                         referencedTable: $$SessionsTableTableReferences
                             ._participantReadingTimeTableRefsTable(db),
@@ -6466,8 +6457,7 @@ class $$SessionsTableTableTableManager extends RootTableManager<
                                 .where((e) => e.sessionId == item.id),
                         typedResults: items),
                   if (pageActivityTableRefs)
-                    await $_getPrefetchedData<Session, $SessionsTableTable,
-                            PageActivity>(
+                    await $_getPrefetchedData(
                         currentTable: table,
                         referencedTable: $$SessionsTableTableReferences
                             ._pageActivityTableRefsTable(db),
@@ -6479,8 +6469,7 @@ class $$SessionsTableTableTableManager extends RootTableManager<
                                 .where((e) => e.sessionId == item.id),
                         typedResults: items),
                   if (messagesTableRefs)
-                    await $_getPrefetchedData<Session, $SessionsTableTable,
-                            Message>(
+                    await $_getPrefetchedData(
                         currentTable: table,
                         referencedTable: $$SessionsTableTableReferences
                             ._messagesTableRefsTable(db),
@@ -6553,10 +6542,8 @@ final class $$SessionMembersTableTableReferences extends BaseReferences<
           db.sessionMembersTable.sessionId, db.sessionsTable.id));
 
   $$SessionsTableTableProcessedTableManager get sessionId {
-    final $_column = $_itemColumn<String>('session_id')!;
-
     final manager = $$SessionsTableTableTableManager($_db, $_db.sessionsTable)
-        .filter((f) => f.id.sqlEquals($_column));
+        .filter((f) => f.id($_item.sessionId));
     final item = $_typedResult.readTableOrNull(_sessionIdTable($_db));
     if (item == null) return manager;
     return ProcessedTableManager(
@@ -6876,10 +6863,8 @@ final class $$SessionEventsTableTableReferences extends BaseReferences<
           db.sessionEventsTable.sessionId, db.sessionsTable.id));
 
   $$SessionsTableTableProcessedTableManager get sessionId {
-    final $_column = $_itemColumn<String>('session_id')!;
-
     final manager = $$SessionsTableTableTableManager($_db, $_db.sessionsTable)
-        .filter((f) => f.id.sqlEquals($_column));
+        .filter((f) => f.id($_item.sessionId));
     final item = $_typedResult.readTableOrNull(_sessionIdTable($_db));
     if (item == null) return manager;
     return ProcessedTableManager(
@@ -7188,10 +7173,9 @@ final class $$OutboxTableTableReferences
           $_aliasNameGenerator(db.outboxTable.sessionId, db.sessionsTable.id));
 
   $$SessionsTableTableProcessedTableManager? get sessionId {
-    final $_column = $_itemColumn<String>('session_id');
-    if ($_column == null) return null;
+    if ($_item.sessionId == null) return null;
     final manager = $$SessionsTableTableTableManager($_db, $_db.sessionsTable)
-        .filter((f) => f.id.sqlEquals($_column));
+        .filter((f) => f.id($_item.sessionId!));
     final item = $_typedResult.readTableOrNull(_sessionIdTable($_db));
     if (item == null) return manager;
     return ProcessedTableManager(
@@ -7509,10 +7493,8 @@ final class $$ReadingProgressTableTableReferences extends BaseReferences<
           db.readingProgressTable.sessionId, db.sessionsTable.id));
 
   $$SessionsTableTableProcessedTableManager get sessionId {
-    final $_column = $_itemColumn<String>('session_id')!;
-
     final manager = $$SessionsTableTableTableManager($_db, $_db.sessionsTable)
-        .filter((f) => f.id.sqlEquals($_column));
+        .filter((f) => f.id($_item.sessionId));
     final item = $_typedResult.readTableOrNull(_sessionIdTable($_db));
     if (item == null) return manager;
     return ProcessedTableManager(
@@ -7524,10 +7506,8 @@ final class $$ReadingProgressTableTableReferences extends BaseReferences<
           db.readingProgressTable.bookId, db.booksTable.id));
 
   $$BooksTableTableProcessedTableManager get bookId {
-    final $_column = $_itemColumn<String>('book_id')!;
-
     final manager = $$BooksTableTableTableManager($_db, $_db.booksTable)
-        .filter((f) => f.id.sqlEquals($_column));
+        .filter((f) => f.id($_item.bookId));
     final item = $_typedResult.readTableOrNull(_bookIdTable($_db));
     if (item == null) return manager;
     return ProcessedTableManager(
@@ -7908,10 +7888,8 @@ final class $$ParticipantReadingTimeTableTableReferences extends BaseReferences<
           db.participantReadingTimeTable.sessionId, db.sessionsTable.id));
 
   $$SessionsTableTableProcessedTableManager get sessionId {
-    final $_column = $_itemColumn<String>('session_id')!;
-
     final manager = $$SessionsTableTableTableManager($_db, $_db.sessionsTable)
-        .filter((f) => f.id.sqlEquals($_column));
+        .filter((f) => f.id($_item.sessionId));
     final item = $_typedResult.readTableOrNull(_sessionIdTable($_db));
     if (item == null) return manager;
     return ProcessedTableManager(
@@ -8211,10 +8189,8 @@ final class $$PageActivityTableTableReferences extends BaseReferences<
           db.pageActivityTable.sessionId, db.sessionsTable.id));
 
   $$SessionsTableTableProcessedTableManager get sessionId {
-    final $_column = $_itemColumn<String>('session_id')!;
-
     final manager = $$SessionsTableTableTableManager($_db, $_db.sessionsTable)
-        .filter((f) => f.id.sqlEquals($_column));
+        .filter((f) => f.id($_item.sessionId));
     final item = $_typedResult.readTableOrNull(_sessionIdTable($_db));
     if (item == null) return manager;
     return ProcessedTableManager(
@@ -8226,10 +8202,8 @@ final class $$PageActivityTableTableReferences extends BaseReferences<
           $_aliasNameGenerator(db.pageActivityTable.bookId, db.booksTable.id));
 
   $$BooksTableTableProcessedTableManager get bookId {
-    final $_column = $_itemColumn<String>('book_id')!;
-
     final manager = $$BooksTableTableTableManager($_db, $_db.booksTable)
-        .filter((f) => f.id.sqlEquals($_column));
+        .filter((f) => f.id($_item.bookId));
     final item = $_typedResult.readTableOrNull(_bookIdTable($_db));
     if (item == null) return manager;
     return ProcessedTableManager(
@@ -8598,10 +8572,8 @@ final class $$MessagesTableTableReferences
           db.messagesTable.sessionId, db.sessionsTable.id));
 
   $$SessionsTableTableProcessedTableManager get sessionId {
-    final $_column = $_itemColumn<String>('session_id')!;
-
     final manager = $$SessionsTableTableTableManager($_db, $_db.sessionsTable)
-        .filter((f) => f.id.sqlEquals($_column));
+        .filter((f) => f.id($_item.sessionId));
     final item = $_typedResult.readTableOrNull(_sessionIdTable($_db));
     if (item == null) return manager;
     return ProcessedTableManager(
@@ -8909,10 +8881,8 @@ final class $$NotesTableTableReferences
           $_aliasNameGenerator(db.notesTable.bookId, db.booksTable.id));
 
   $$BooksTableTableProcessedTableManager get bookId {
-    final $_column = $_itemColumn<String>('book_id')!;
-
     final manager = $$BooksTableTableTableManager($_db, $_db.booksTable)
-        .filter((f) => f.id.sqlEquals($_column));
+        .filter((f) => f.id($_item.bookId));
     final item = $_typedResult.readTableOrNull(_bookIdTable($_db));
     if (item == null) return manager;
     return ProcessedTableManager(

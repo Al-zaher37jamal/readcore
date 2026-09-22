@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:integration_test/integration_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:readmesh/data/database/app_database.dart';
 import 'package:readmesh/data/repositories/book_repository.dart';
@@ -12,9 +13,10 @@ import 'package:readmesh/features/lan/lan_host_server.dart';
 import 'package:readmesh/features/lan/lan_participant_client.dart';
 import 'package:readmesh/features/profile/device_service.dart';
 import 'package:readmesh/features/reader/pdf_reader_screen.dart';
-import '../../test_helpers.dart';
+import '../test/test_helpers.dart';
 
 void main() {
+  IntegrationTestWidgetsFlutterBinding.ensureInitialized();
   late Directory tempDir;
   late AppDatabase db;
   late BookRepository bookRepo;
