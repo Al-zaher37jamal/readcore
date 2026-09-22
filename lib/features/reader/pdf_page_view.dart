@@ -142,7 +142,7 @@ class _PdfPageViewState extends State<PdfPageView> {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const Icon(Icons.error_outline_rounded,
+              const Icon(Icons.error_outline,
                   size: 48, color: Colors.red),
               const SizedBox(height: 16),
               Text(
@@ -206,7 +206,7 @@ class _PdfPageViewState extends State<PdfPageView> {
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    const Icon(Icons.error_outline_rounded,
+                    const Icon(Icons.error_outline,
                         size: 48, color: Colors.red),
                     const SizedBox(height: 16),
                     Text(

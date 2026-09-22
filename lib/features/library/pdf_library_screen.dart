@@ -204,7 +204,7 @@ class _PdfLibraryScreenState extends State<PdfLibraryScreen> {
             )
           else
             IconButton(
-              icon: const Icon(Icons.add_rounded),
+              icon: const Icon(Icons.add),
               tooltip: l10n.importBook,
               onPressed: () => _importSampleBook(),
             ),
@@ -244,7 +244,7 @@ class _PdfLibraryScreenState extends State<PdfLibraryScreen> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Icon(Icons.library_books_rounded, size: 72, color: Color(0xFF94A3B8)),
+            const Icon(Icons.library_books, size: 72, color: Color(0xFF94A3B8)),
             const SizedBox(height: 16),
             Text(
               l10n.noBooksInLibrary,
@@ -259,7 +259,7 @@ class _PdfLibraryScreenState extends State<PdfLibraryScreen> {
             const SizedBox(height: 24),
             ElevatedButton.icon(
               onPressed: _isImporting ? null : () => _importSampleBook(),
-              icon: const Icon(Icons.add_rounded),
+              icon: const Icon(Icons.add),
               label: Text(l10n.importSamplePdf),
             ),
           ],
@@ -290,7 +290,7 @@ class _PdfLibraryScreenState extends State<PdfLibraryScreen> {
                     border: Border.all(color: const Color(0xFFBFDBFE)),
                   ),
                   child: const Center(
-                    child: Icon(Icons.picture_as_pdf_rounded, color: Color(0xFF2563EB), size: 30),
+                    child: Icon(Icons.picture_as_pdf, color: Color(0xFF2563EB), size: 30),
                   ),
                 ),
                 const SizedBox(width: 16),
@@ -318,7 +318,7 @@ class _PdfLibraryScreenState extends State<PdfLibraryScreen> {
                   ),
                 ),
                 IconButton(
-                  icon: const Icon(Icons.delete_outline_rounded, color: Color(0xFF94A3B8)),
+                  icon: const Icon(Icons.delete_outline, color: Color(0xFF94A3B8)),
                   tooltip: l10n.deleteBook,
                   onPressed: () => _deleteBook(book),
                 ),
@@ -381,7 +381,7 @@ class _PdfLibraryScreenState extends State<PdfLibraryScreen> {
                     ),
                   );
                 },
-                icon: const Icon(Icons.auto_stories_rounded, size: 18),
+                icon: const Icon(Icons.auto_stories, size: 18),
                 label: Text(l10n.readNow),
               ),
             ),

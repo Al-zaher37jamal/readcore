@@ -79,7 +79,7 @@ class _ReadMeshMainShellState extends State<ReadMeshMainShell> {
         title: Text(l10n.appNameLabel),
         actions: [
           IconButton(
-            icon: const Icon(Icons.language_rounded),
+            icon: const Icon(Icons.language),
             tooltip: l10n.language,
             onPressed: () => _showLanguageDialog(context),
           ),
@@ -98,11 +98,11 @@ class _ReadMeshMainShellState extends State<ReadMeshMainShell> {
         },
         items: [
           BottomNavigationBarItem(
-            icon: const Icon(Icons.menu_book_rounded),
+            icon: const Icon(Icons.menu_book),
             label: l10n.library,
           ),
           BottomNavigationBarItem(
-            icon: const Icon(Icons.meeting_room_rounded),
+            icon: const Icon(Icons.meeting_room),
             label: l10n.rooms,
           ),
         ],

@@ -354,12 +354,12 @@ class _RoomsScreenState extends State<RoomsScreen> {
         title: Text(l10n.localReadingRooms),
         actions: [
           IconButton(
-            icon: const Icon(Icons.login_rounded),
+            icon: const Icon(Icons.login),
             tooltip: l10n.joinWithCode,
             onPressed: _showJoinRoomDialog,
           ),
           IconButton(
-            icon: const Icon(Icons.add_home_rounded),
+            icon: const Icon(Icons.add),
             tooltip: l10n.createRoom,
             onPressed: _showCreateRoomDialog,
           ),
@@ -401,7 +401,7 @@ class _RoomsScreenState extends State<RoomsScreen> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Icon(Icons.meeting_room_outlined, size: 72, color: Color(0xFF94A3B8)),
+            const Icon(Icons.meeting_room, size: 72, color: Color(0xFF94A3B8)),
             const SizedBox(height: 16),
             Text(
               l10n.noActiveReadingRooms,
@@ -419,13 +419,13 @@ class _RoomsScreenState extends State<RoomsScreen> {
               children: [
                 ElevatedButton.icon(
                   onPressed: _showCreateRoomDialog,
-                  icon: const Icon(Icons.add_rounded),
+                  icon: const Icon(Icons.add),
                   label: Text(l10n.createRoom),
                 ),
                 const SizedBox(width: 12),
                 OutlinedButton.icon(
                   onPressed: _showJoinRoomDialog,
-                  icon: const Icon(Icons.login_rounded),
+                  icon: const Icon(Icons.login),
                   label: Text(l10n.joinRoom),
                 ),
               ],
@@ -514,7 +514,7 @@ class _RoomsScreenState extends State<RoomsScreen> {
                   ),
                   if (isEnded) ...[
                     const SizedBox(width: 8),
-                    Icon(Icons.history_rounded, size: 14, color: const Color(0xFF94A3B8)),
+                    Icon(Icons.history, size: 14, color: const Color(0xFF94A3B8)),
                   ],
                 ],
               ),

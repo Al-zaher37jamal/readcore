@@ -400,7 +400,7 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
                   ],
                 ),
                 IconButton(
-                  icon: const Icon(Icons.copy_rounded, color: Color(0xFF2563EB)),
+                  icon: const Icon(Icons.copy, color: Color(0xFF2563EB)),
                   tooltip: l10n.copyCode,
                   onPressed: () {
                     Clipboard.setData(ClipboardData(text: session.id));
@@ -421,7 +421,7 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
                   Expanded(
                     child: Row(
                       children: [
-                        const Icon(Icons.wifi_rounded, size: 16, color: Color(0xFF2563EB)),
+                        const Icon(Icons.wifi, size: 16, color: Color(0xFF2563EB)),
                         const SizedBox(width: 6),
                         Expanded(
                           child: Text(
@@ -491,7 +491,7 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
                       onPressed: () {
                         _participantClient?.reconnect();
                       },
-                      icon: const Icon(Icons.refresh_rounded, size: 16),
+                      icon: const Icon(Icons.refresh, size: 16),
                       label: Text(l10n.reconnect, style: const TextStyle(fontSize: 12)),
                       style: TextButton.styleFrom(
                         visualDensity: VisualDensity.compact,
@@ -546,7 +546,7 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
                       _roomService.startSession(session.id);
                       _hostServer?.broadcastSessionStarted();
                     },
-                    icon: const Icon(Icons.play_arrow_rounded),
+                    icon: const Icon(Icons.play_arrow),
                     label: Text(l10n.startReadingSession),
                     style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF10B981)),
                   ),
@@ -561,7 +561,7 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
                           _roomService.pauseSession(session.id);
                           _hostServer?.broadcastSessionPaused();
                         },
-                        icon: const Icon(Icons.pause_rounded),
+                        icon: const Icon(Icons.pause),
                         label: Text(l10n.pause),
                       ),
                     ),
@@ -581,7 +581,7 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
                             });
                           }
                         },
-                        icon: const Icon(Icons.stop_rounded),
+                        icon: const Icon(Icons.stop),
                         label: Text(l10n.endRoom),
                         style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFEF4444)),
                       ),
@@ -598,7 +598,7 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
                           _roomService.resumeSession(session.id);
                           _hostServer?.broadcastSessionResumed();
                         },
-                        icon: const Icon(Icons.play_arrow_rounded),
+                        icon: const Icon(Icons.play_arrow),
                         label: Text(l10n.resume),
                         style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF10B981)),
                       ),
@@ -618,7 +618,7 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
                             });
                           }
                         },
-                        icon: const Icon(Icons.stop_rounded),
+                        icon: const Icon(Icons.stop),
                         label: Text(l10n.endRoom),
                         style: OutlinedButton.styleFrom(foregroundColor: const Color(0xFFEF4444)),
                       ),
@@ -683,7 +683,7 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
                 const SizedBox(height: 8),
                 Row(
                   children: [
-                    const Icon(Icons.menu_book_rounded, color: Color(0xFF2563EB), size: 28),
+                    const Icon(Icons.menu_book, color: Color(0xFF2563EB), size: 28),
                     const SizedBox(width: 12),
                     Expanded(
                       child: Column(
@@ -723,7 +723,7 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
                               ),
                             );
                           },
-                    icon: const Icon(Icons.auto_stories_rounded),
+                    icon: const Icon(Icons.auto_stories),
                     label: Text(isHost ? l10n.readAsHost : l10n.readAsParticipant),
                   ),
                 ),
@@ -792,7 +792,7 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
                       leading: CircleAvatar(
                         backgroundColor: isHostMember ? const Color(0xFFDBEAFE) : const Color(0xFFF1F5F9),
                         child: Icon(
-                          isHostMember ? Icons.star_rounded : Icons.person_rounded,
+                          isHostMember ? Icons.star : Icons.person,
                           color: isHostMember ? const Color(0xFF2563EB) : const Color(0xFF64748B),
                         ),
                       ),
