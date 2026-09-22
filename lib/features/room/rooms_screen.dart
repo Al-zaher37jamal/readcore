@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:readmesh/core/widgets/app_icon.dart';
 import 'package:readmesh/core/di/injection.dart';
 import 'package:readmesh/core/errors/exceptions.dart';
 import 'package:readmesh/core/l10n/app_localizations.dart';
@@ -354,12 +355,12 @@ class _RoomsScreenState extends State<RoomsScreen> {
         title: Text(l10n.localReadingRooms),
         actions: [
           IconButton(
-            icon: const Icon(Icons.login),
+            icon: AppIcon.login(),
             tooltip: l10n.joinWithCode,
             onPressed: _showJoinRoomDialog,
           ),
           IconButton(
-            icon: const Icon(Icons.add),
+            icon: AppIcon.add(),
             tooltip: l10n.createRoom,
             onPressed: _showCreateRoomDialog,
           ),
@@ -401,7 +402,7 @@ class _RoomsScreenState extends State<RoomsScreen> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Icon(Icons.meeting_room, size: 72, color: Color(0xFF94A3B8)),
+            AppIcon.group(size: 72, color: Color(0xFF94A3B8)),
             const SizedBox(height: 16),
             Text(
               l10n.noActiveReadingRooms,
@@ -419,13 +420,13 @@ class _RoomsScreenState extends State<RoomsScreen> {
               children: [
                 ElevatedButton.icon(
                   onPressed: _showCreateRoomDialog,
-                  icon: const Icon(Icons.add),
+                  icon: AppIcon.add(),
                   label: Text(l10n.createRoom),
                 ),
                 const SizedBox(width: 12),
                 OutlinedButton.icon(
                   onPressed: _showJoinRoomDialog,
-                  icon: const Icon(Icons.login),
+                  icon: AppIcon.login(),
                   label: Text(l10n.joinRoom),
                 ),
               ],
@@ -494,10 +495,7 @@ class _RoomsScreenState extends State<RoomsScreen> {
               const SizedBox(height: 8),
               Row(
                 children: [
-                  Icon(
-                    Icons.circle,
-                    size: 10,
-                    color: room.status == 'active'
+                  AppIcon.dot(size: 10, color: room.status == 'active'
                         ? const Color(0xFF10B981)
                         : room.status == 'paused'
                             ? const Color(0xFFF59E0B)
@@ -514,7 +512,7 @@ class _RoomsScreenState extends State<RoomsScreen> {
                   ),
                   if (isEnded) ...[
                     const SizedBox(width: 8),
-                    Icon(Icons.history, size: 14, color: const Color(0xFF94A3B8)),
+                    AppIcon.history(size: 14, color: const Color(0xFF94A3B8)),
                   ],
                 ],
               ),

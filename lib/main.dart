@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:readmesh/core/widgets/app_icon.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:readmesh/core/constants/app_constants.dart';
 import 'package:readmesh/core/di/injection.dart';
@@ -79,7 +80,7 @@ class _ReadMeshMainShellState extends State<ReadMeshMainShell> {
         title: Text(l10n.appNameLabel),
         actions: [
           IconButton(
-            icon: const Icon(Icons.language),
+            icon: AppIcon.language(),
             tooltip: l10n.language,
             onPressed: () => _showLanguageDialog(context),
           ),
@@ -98,11 +99,11 @@ class _ReadMeshMainShellState extends State<ReadMeshMainShell> {
         },
         items: [
           BottomNavigationBarItem(
-            icon: const Icon(Icons.menu_book),
+            icon: AppIcon.book(),
             label: l10n.library,
           ),
           BottomNavigationBarItem(
-            icon: const Icon(Icons.meeting_room),
+            icon: AppIcon.group(),
             label: l10n.rooms,
           ),
         ],

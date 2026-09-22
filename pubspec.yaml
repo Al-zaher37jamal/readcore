@@ -18,6 +18,7 @@ dependencies:
   uuid: ^4.5.1
   get_it: ^8.0.2
   pdfx: ^2.8.0
+  flutter_svg: ^2.0.10+1
 
 dev_dependencies:
   flutter_test:
@@ -28,3 +29,5 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/icons/

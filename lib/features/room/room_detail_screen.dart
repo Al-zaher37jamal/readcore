@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:readmesh/core/widgets/app_icon.dart';
 import 'package:flutter/services.dart';
 import 'package:readmesh/core/di/injection.dart';
 import 'package:readmesh/core/l10n/app_localizations.dart';
@@ -400,7 +401,7 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
                   ],
                 ),
                 IconButton(
-                  icon: const Icon(Icons.copy, color: Color(0xFF2563EB)),
+                  icon: AppIcon.copy(color: Color(0xFF2563EB)),
                   tooltip: l10n.copyCode,
                   onPressed: () {
                     Clipboard.setData(ClipboardData(text: session.id));
@@ -421,7 +422,7 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
                   Expanded(
                     child: Row(
                       children: [
-                        const Icon(Icons.wifi, size: 16, color: Color(0xFF2563EB)),
+                        AppIcon.wifi(size: 16, color: Color(0xFF2563EB)),
                         const SizedBox(width: 6),
                         Expanded(
                           child: Text(
@@ -463,10 +464,7 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
                 children: [
                   Row(
                     children: [
-                      Icon(
-                        Icons.circle,
-                        size: 10,
-                        color: _participantState == LanConnectionState.connected
+                      AppIcon.dot(size: 10, color: _participantState == LanConnectionState.connected
                             ? const Color(0xFF10B981)
                             : _participantState == LanConnectionState.connecting ||
                                     _participantState == LanConnectionState.reconnecting
@@ -491,7 +489,7 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
                       onPressed: () {
                         _participantClient?.reconnect();
                       },
-                      icon: const Icon(Icons.refresh, size: 16),
+                      icon: AppIcon.refresh(size: 16),
                       label: Text(l10n.reconnect, style: const TextStyle(fontSize: 12)),
                       style: TextButton.styleFrom(
                         visualDensity: VisualDensity.compact,
@@ -546,7 +544,7 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
                       _roomService.startSession(session.id);
                       _hostServer?.broadcastSessionStarted();
                     },
-                    icon: const Icon(Icons.play_arrow),
+                    icon: AppIcon.play(),
                     label: Text(l10n.startReadingSession),
                     style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF10B981)),
                   ),
@@ -561,7 +559,7 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
                           _roomService.pauseSession(session.id);
                           _hostServer?.broadcastSessionPaused();
                         },
-                        icon: const Icon(Icons.pause),
+                        icon: AppIcon.pause(),
                         label: Text(l10n.pause),
                       ),
                     ),
@@ -581,7 +579,7 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
                             });
                           }
                         },
-                        icon: const Icon(Icons.stop),
+                        icon: AppIcon.stop(),
                         label: Text(l10n.endRoom),
                         style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFEF4444)),
                       ),
@@ -598,7 +596,7 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
                           _roomService.resumeSession(session.id);
                           _hostServer?.broadcastSessionResumed();
                         },
-                        icon: const Icon(Icons.play_arrow),
+                        icon: AppIcon.play(),
                         label: Text(l10n.resume),
                         style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF10B981)),
                       ),
@@ -618,7 +616,7 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
                             });
                           }
                         },
-                        icon: const Icon(Icons.stop),
+                        icon: AppIcon.stop(),
                         label: Text(l10n.endRoom),
                         style: OutlinedButton.styleFrom(foregroundColor: const Color(0xFFEF4444)),
                       ),
@@ -683,7 +681,7 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
                 const SizedBox(height: 8),
                 Row(
                   children: [
-                    const Icon(Icons.menu_book, color: Color(0xFF2563EB), size: 28),
+                    AppIcon.book(color: Color(0xFF2563EB), size: 28),
                     const SizedBox(width: 12),
                     Expanded(
                       child: Column(
@@ -723,7 +721,7 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
                               ),
                             );
                           },
-                    icon: const Icon(Icons.auto_stories),
+                    icon: AppIcon.book(),
                     label: Text(isHost ? l10n.readAsHost : l10n.readAsParticipant),
                   ),
                 ),
@@ -791,10 +789,9 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
                       contentPadding: EdgeInsets.zero,
                       leading: CircleAvatar(
                         backgroundColor: isHostMember ? const Color(0xFFDBEAFE) : const Color(0xFFF1F5F9),
-                        child: Icon(
-                          isHostMember ? Icons.star : Icons.person,
-                          color: isHostMember ? const Color(0xFF2563EB) : const Color(0xFF64748B),
-                        ),
+                        child: isHostMember
+                            ? AppIcon.star(color: const Color(0xFF2563EB))
+                            : AppIcon.person(color: const Color(0xFF64748B)),
                       ),
                       title: Text(
                         member.displayName,

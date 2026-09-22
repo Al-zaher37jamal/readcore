@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:readmesh/core/widgets/app_icon.dart';
 import 'package:pdfx/pdfx.dart';
 
 /// Widget responsible for rendering a REAL PDF document page from local storage
@@ -142,8 +143,7 @@ class _PdfPageViewState extends State<PdfPageView> {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const Icon(Icons.error_outline,
-                  size: 48, color: Colors.red),
+              AppIcon.error(size: 48, color: Colors.red),
               const SizedBox(height: 16),
               Text(
                 _errorMessage!,
@@ -153,7 +153,7 @@ class _PdfPageViewState extends State<PdfPageView> {
               const SizedBox(height: 20),
               ElevatedButton.icon(
                 onPressed: _loadDocument,
-                icon: const Icon(Icons.refresh),
+                icon: AppIcon.refresh(),
                 label: const Text('Retry'),
               ),
             ],
@@ -206,8 +206,7 @@ class _PdfPageViewState extends State<PdfPageView> {
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    const Icon(Icons.error_outline,
-                        size: 48, color: Colors.red),
+                    AppIcon.error(size: 48, color: Colors.red),
                     const SizedBox(height: 16),
                     Text(
                       'Error: $error',

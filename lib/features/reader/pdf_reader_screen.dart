@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:readmesh/core/widgets/app_icon.dart';
 import 'package:readmesh/core/di/injection.dart';
 import 'package:readmesh/core/l10n/app_localizations.dart';
 import 'package:readmesh/data/database/app_database.dart';
@@ -286,7 +287,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
         ),
         actions: [
           IconButton(
-            icon: const Icon(Icons.bookmark),
+            icon: AppIcon.bookmark(),
             tooltip: l10n.jumpToPage,
             onPressed: _isLoading || _errorMessage != null || _sessionStatus == 'ended' ? null : _showJumpToPageDialog,
           ),
@@ -322,7 +323,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const Icon(Icons.error_outline, size: 48, color: Colors.red),
+              AppIcon.error(size: 48, color: Colors.red),
               const SizedBox(height: 16),
               Text(
                 _errorMessage!,
@@ -332,7 +333,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
               const SizedBox(height: 20),
               ElevatedButton.icon(
                 onPressed: _initializeReader,
-                icon: const Icon(Icons.refresh),
+                icon: AppIcon.refresh(),
                 label: Text(l10n.go),
               ),
             ],
@@ -353,7 +354,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
             child: Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                const Icon(Icons.pause_circle, size: 18, color: Color(0xFFD97706)),
+                AppIcon.pause(size: 18, color: Color(0xFFD97706)),
                 const SizedBox(width: 8),
                 Text(
                   l10n.readingSessionPaused,
@@ -374,7 +375,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
             child: Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                const Icon(Icons.stop_circle, size: 18, color: Color(0xFF64748B)),
+                AppIcon.stop(size: 18, color: Color(0xFF64748B)),
                 const SizedBox(width: 8),
                 Text(
                   l10n.readingSessionEnded,
@@ -401,7 +402,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                     child: Column(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        const Icon(Icons.block, size: 48, color: Color(0xFF94A3B8)),
+                        AppIcon.cancel(size: 48, color: Color(0xFF94A3B8)),
                         const SizedBox(height: 12),
                         Text(
                           l10n.sessionEnded,
@@ -444,7 +445,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
           children: [
             IconButton(
               key: const Key('prev_page_button'),
-              icon: const Icon(Icons.chevron_left, size: 32),
+              icon: AppIcon.back(size: 32),
               onPressed: !isParticipantMode && !isEnded && _currentPage > 1 ? previousPage : null,
               tooltip: isParticipantMode ? l10n.waitingForParticipants : 'Previous Page',
             ),
@@ -457,7 +458,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     if (isParticipantMode) ...[
-                      const Icon(Icons.sync, size: 16, color: Color(0xFF10B981)),
+                      AppIcon.refresh(size: 16, color: Color(0xFF10B981)),
                       const SizedBox(width: 6),
                     ],
                     Text(
@@ -477,7 +478,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
             ),
             IconButton(
               key: const Key('next_page_button'),
-              icon: const Icon(Icons.chevron_right, size: 32),
+              icon: AppIcon.forward(size: 32),
               onPressed: !isParticipantMode && !isEnded && _currentPage < _totalPages ? nextPage : null,
               tooltip: isParticipantMode ? l10n.waitingForParticipants : 'Next Page',
             ),
