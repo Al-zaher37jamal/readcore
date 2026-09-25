@@ -14,6 +14,8 @@ import 'package:readmesh/data/repositories/reading_progress_repository.dart';
 import 'package:readmesh/data/repositories/session_event_repository.dart';
 import 'package:readmesh/data/repositories/session_member_repository.dart';
 import 'package:readmesh/data/repositories/session_repository.dart';
+import 'package:readmesh/data/repositories/session_content_repository.dart';
+import 'package:readmesh/data/storage/session_voice_store.dart';
 import 'package:readmesh/data/storage/book_file_manager.dart';
 import 'package:readmesh/data/storage/disk_space_checker.dart';
 import 'package:readmesh/data/storage/orphan_reconciler.dart';
@@ -55,6 +57,7 @@ Future<void> setupLocator({
   final fileManager = BookFileManager(customStorageDir);
   await fileManager.initialize();
   getIt.registerSingleton<BookFileManager>(fileManager);
+  getIt.registerSingleton<SessionVoiceStore>(SessionVoiceStore(fileManager.rootDir));
 
   final diskSpaceChecker = customDiskSpaceChecker ?? const SystemDiskSpaceChecker();
   getIt.registerSingleton<DiskSpaceChecker>(diskSpaceChecker);
@@ -79,6 +82,7 @@ Future<void> setupLocator({
   getIt.registerSingleton<BookRepository>(bookRepo);
   getIt.registerSingleton<DeviceProfileRepository>(deviceProfileRepo);
   getIt.registerSingleton<SessionRepository>(sessionRepo);
+  getIt.registerSingleton<SessionContentRepository>(SessionContentRepository(database));
   getIt.registerSingleton<SessionMemberRepository>(sessionMemberRepo);
   getIt.registerSingleton<SessionEventRepository>(sessionEventRepo);
   getIt.registerSingleton<OutboxRepository>(outboxRepo);

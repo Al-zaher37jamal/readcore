@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:readmesh/core/widgets/app_icon.dart';
 import 'package:readmesh/core/di/injection.dart';
@@ -8,6 +9,8 @@ import 'package:readmesh/data/repositories/book_repository.dart';
 import 'package:readmesh/data/repositories/session_repository.dart';
 import 'package:readmesh/features/lan/lan_discovery_service.dart';
 import 'package:readmesh/features/lan/lan_ip_helper.dart';
+import 'package:readmesh/features/lan/lan_message.dart';
+import 'package:readmesh/features/lan/lan_participant_client.dart';
 import 'package:readmesh/features/room/local_room_service.dart';
 import 'package:readmesh/features/room/room_detail_screen.dart';
 
@@ -228,7 +231,7 @@ class _RoomsScreenState extends State<RoomsScreen> {
                     TextField(
                       controller: ipController,
                       decoration: InputDecoration(
-                        labelText: l10n.hostLanIpExample,
+                        labelText: l10n.tr('optionalHostIp'),
                         hintText: 'e.g. 10.87.235.106 or 192.168.0.73:40404',
                         border: const OutlineInputBorder(),
                         helperText: 'e.g. 10.87.235.106, 192.168.0.73, or 10.87.235.106:40404',
@@ -296,7 +299,7 @@ class _RoomsScreenState extends State<RoomsScreen> {
 
     if (joined == null) return;
     final code = (joined['code'] ?? '').trim();
-    final ipInput = (joined['ip'] ?? '').trim();
+    var ipInput = (joined['ip'] ?? '').trim();
 
     if (code.isEmpty) {
       if (mounted) {
@@ -306,13 +309,25 @@ class _RoomsScreenState extends State<RoomsScreen> {
       }
       return;
     }
+    // Resolve a room code using the existing UDP 40405 discovery. The old
+    // manual Host IP:port field remains a fallback when broadcasts are blocked.
     if (ipInput.isEmpty) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(l10n.invalidIp), backgroundColor: Colors.red),
-        );
+      var match = _discoveryService.roomForCode(code);
+      if (match == null) {
+        // A beacon is sent every two seconds. Give a newly opened listener a
+        // short chance to discover it before presenting the manual IP fallback.
+        await Future<void>.delayed(const Duration(milliseconds: 2400));
+        if (!mounted) return;
+        match = _discoveryService.roomForCode(code);
       }
-      return;
+      if (match == null) {
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(l10n.tr('roomCodeNotFound')),
+          backgroundColor: Colors.red,
+        ));
+        return;
+      }
+      ipInput = '${match.hostIp}:${match.port}';
     }
     // Parse host input that may be bare IPv4 or IP:port - FIX for 10.87.235.106
     final parsed = LanIpHelper.parseHostPort(ipInput, defaultPort: 40404);
@@ -327,7 +342,7 @@ class _RoomsScreenState extends State<RoomsScreen> {
     final ip = parsed.ip;
     final port = parsed.port;
 
-    if (!LanIpHelper.isValidIPv4Any(ip)) {
+    if (!LanIpHelper.isValidIPv4(ip)) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(l10n.invalidIp), backgroundColor: Colors.red),
@@ -337,30 +352,60 @@ class _RoomsScreenState extends State<RoomsScreen> {
     }
 
     try {
-      // For remote LAN join, pass remoteTitle if discovered
-      String? remoteTitle;
-      try {
-        final discovered = _discoveryService.discoveredRooms;
-        final match = discovered.where((r) => r.sessionId.toUpperCase() == code.toUpperCase()).toList();
-        if (match.isNotEmpty) remoteTitle = match.first.title;
-      } catch (_) {}
-
-      final session = await _roomService.joinRoom(
-        sessionCode: code,
-        remoteTitle: remoteTitle,
+      final normalizedCode = code.toUpperCase();
+      final previous = await _sessionRepo.getSessionById(normalizedCode);
+      if (previous?.status == 'ended') {
+        throw const DatabaseOperationException('Cannot join an ended room session.');
+      }
+      final profile = await _roomService.getCurrentProfile();
+      final client = LanParticipantClient(
+        sessionId: normalizedCode,
+        deviceId: profile.id,
+        displayName: profile.displayName,
       );
-
-      if (mounted) {
-        Navigator.push(
+      final snapshot = Completer<LanMessage>();
+      final sub = client.messageStream.listen((message) {
+        if (message.type == LanMessageType.stateSnapshot && !snapshot.isCompleted) {
+          snapshot.complete(message);
+        }
+      });
+      try {
+        // Do not create a locally "active" placeholder unless the Host actually
+        // acknowledges this room code on TCP 40404 (or its advertised port).
+        await client.connect(hostAddress: ip, port: port);
+        final initial = await snapshot.future.timeout(const Duration(seconds: 5));
+        if (initial.sessionStatus == 'ended' || initial.sessionStatus == 'saved') {
+          throw const DatabaseOperationException('Cannot join an ended room session.');
+        }
+        if (!client.isJoined) throw StateError('Host did not acknowledge the join.');
+        final discovered = _discoveryService.discoveredRooms;
+        final match = discovered.where((r) => r.sessionId.toUpperCase() == normalizedCode).toList();
+        final session = await _roomService.joinRoom(
+          sessionCode: normalizedCode,
+          remoteTitle: match.isEmpty ? null : match.first.title,
+          remoteHostDeviceId: initial.senderDeviceId,
+        );
+        // A placeholder defaults to active, but a newly created or paused
+        // Host room must display its authoritative state on the second phone.
+        if (initial.sessionStatus == 'created' || initial.sessionStatus == 'paused') {
+          await _sessionRepo.updateSessionStatus(session.id, initial.sessionStatus!);
+        }
+        if (!mounted) return;
+        await Navigator.push(
           context,
           MaterialPageRoute(
             builder: (_) => RoomDetailScreen(
               sessionId: session.id,
               hostAddress: ip,
               port: port,
+              participantClient: client,
             ),
           ),
         );
+      } finally {
+        await sub.cancel();
+        await client.disconnect();
+        client.dispose();
       }
     } catch (e) {
       if (!mounted) return;
@@ -481,6 +526,12 @@ class _RoomsScreenState extends State<RoomsScreen> {
       child: InkWell(
         borderRadius: BorderRadius.circular(12),
         onTap: () {
+          if (room.status == 'saved') {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('${l10n.savedStatus} • ${l10n.mySessions}')),
+            );
+            return;
+          }
           if (isEnded) {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(content: Text(l10n.endedRoomHistoryOnly)),

@@ -20,6 +20,8 @@ class LanParticipantClient {
   int _currentPage = 1;
   int _totalPages = 1;
   String _sessionStatus = 'created';
+  bool _hasSnapshot = false;
+  bool _hasJoinAck = false;
 
   // Last connection parameters for reconnecting
   String? _lastHostAddress;
@@ -28,6 +30,8 @@ class LanParticipantClient {
   Timer? _reconnectTimer;
   final bool _autoReconnect;
   bool _intentionallyDisconnected = false;
+  bool _disposed = false;
+  int _connectionGeneration = 0;
 
   final StreamController<LanConnectionState> _stateController =
       StreamController<LanConnectionState>.broadcast();
@@ -50,6 +54,10 @@ class LanParticipantClient {
   int get currentPage => _currentPage;
   int get totalPages => _totalPages;
   String get sessionStatus => _sessionStatus;
+  bool get hasSnapshot => _hasSnapshot;
+  bool get hasJoinAck => _hasJoinAck;
+  bool get isJoined => isConnected && _hasJoinAck && _hasSnapshot &&
+      _sessionStatus != 'saved' && _sessionStatus != 'ended';
 
   Stream<LanConnectionState> get stateStream => _stateController.stream;
   Stream<LanMessage> get messageStream => _messageController.stream;
@@ -62,26 +70,36 @@ class LanParticipantClient {
     required int port,
     Duration timeout = const Duration(seconds: 5),
   }) async {
+    if (_disposed) throw StateError('LAN client is disposed.');
+    final generation = ++_connectionGeneration;
+    _cleanupSocket();
     _lastHostAddress = hostAddress;
     _lastPort = port;
     _intentionallyDisconnected = false;
+    _hasSnapshot = false;
+    _hasJoinAck = false;
 
     _updateState(LanConnectionState.connecting);
 
     try {
-      _socket = await Socket.connect(hostAddress, port, timeout: timeout);
+      final socket = await Socket.connect(hostAddress, port, timeout: timeout);
+      if (_disposed || generation != _connectionGeneration) {
+        socket.destroy();
+        return;
+      }
+      _socket = socket;
 
       _updateState(LanConnectionState.connected);
 
       // Listen to line-delimited JSON stream
       final lineStream = utf8.decoder
-          .bind(_socket!)
+          .bind(socket)
           .transform(const LineSplitter());
 
       _lineSubscription = lineStream.listen(
         _processHostLine,
-        onError: (err) => _handleSocketDisconnect(),
-        onDone: () => _handleSocketDisconnect(),
+        onError: (err) => _handleSocketDisconnect(socket),
+        onDone: () => _handleSocketDisconnect(socket),
         cancelOnError: true,
       );
 
@@ -94,7 +112,9 @@ class LanParticipantClient {
         ),
       );
     } catch (e) {
-      _handleSocketDisconnect();
+      if (!_disposed && generation == _connectionGeneration) {
+        _handleSocketDisconnect();
+      }
       rethrow;
     }
   }
@@ -110,20 +130,38 @@ class LanParticipantClient {
     }
   }
 
+  /// Sends an ordered content/voice packet without buffering the full file in
+  /// the OS socket. The regular send() remains unchanged for Phase 4 packets.
+  Future<bool> sendAndFlush(LanMessage message) async {
+    final socket = _socket;
+    if (!isJoined || socket == null || message.sessionId != sessionId) return false;
+    try {
+      socket.write(message.serialize());
+      await socket.flush().timeout(const Duration(seconds: 5));
+      return identical(_socket, socket) && isJoined;
+    } catch (_) {
+      _handleSocketDisconnect(socket);
+      return false;
+    }
+  }
+
   /// Processes a single line received from the Host.
   void _processHostLine(String line) {
+    if (_disposed || line.length > 65536) return;
     try {
       final msg = LanMessage.deserialize(line);
+      if (msg.sessionId != sessionId) return;
       _messageController.add(msg);
 
       switch (msg.type) {
         case LanMessageType.stateSnapshot:
+          _hasSnapshot = true;
+          if (msg.totalPages != null) {
+            _totalPages = msg.totalPages!;
+          }
           if (msg.currentPage != null) {
             _currentPage = msg.currentPage!;
             _pageController.add(_currentPage);
-          }
-          if (msg.totalPages != null) {
-            _totalPages = msg.totalPages!;
           }
           if (msg.sessionStatus != null) {
             _sessionStatus = msg.sessionStatus!;
@@ -132,12 +170,12 @@ class LanParticipantClient {
           break;
 
         case LanMessageType.pageChanged:
+          if (msg.totalPages != null) {
+            _totalPages = msg.totalPages!;
+          }
           if (msg.currentPage != null) {
             _currentPage = msg.currentPage!;
             _pageController.add(_currentPage);
-          }
-          if (msg.totalPages != null) {
-            _totalPages = msg.totalPages!;
           }
           break;
 
@@ -160,14 +198,20 @@ class LanParticipantClient {
           _statusController.add(_sessionStatus);
           break;
 
+        case LanMessageType.sessionSaved:
         case LanMessageType.sessionEnded:
-          _sessionStatus = 'ended';
+          _sessionStatus = msg.type == LanMessageType.sessionEnded ? 'ended' : 'saved';
+          _intentionallyDisconnected = true;
+          _reconnectTimer?.cancel();
           _statusController.add(_sessionStatus);
+          // The Host closed this live room; retain history, not the old socket.
+          disconnect();
           break;
 
         case LanMessageType.joinAck:
+          _hasJoinAck = true;
+          break;
         case LanMessageType.pong:
-          // Informational acknowledgments
           break;
 
         default:
@@ -179,8 +223,12 @@ class LanParticipantClient {
   }
 
   /// Handles unintended socket disconnection and triggers reconnection if enabled.
-  void _handleSocketDisconnect() {
+  void _handleSocketDisconnect([Socket? disconnectedSocket]) {
+    if (disconnectedSocket != null && !identical(_socket, disconnectedSocket)) {
+      return; // A delayed callback from an older connection must not close a new one.
+    }
     _cleanupSocket();
+    _hasSnapshot = false;
 
     if (_state != LanConnectionState.disconnected) {
       _updateState(LanConnectionState.disconnected);
@@ -202,28 +250,41 @@ class LanParticipantClient {
 
   /// Attempts to re-establish connection to the Host and requests authoritative state.
   Future<void> reconnect() async {
-    if (_lastHostAddress == null || _lastPort == null) return;
+    if (_disposed || _lastHostAddress == null || _lastPort == null ||
+        _sessionStatus == 'ended' || _sessionStatus == 'saved' ||
+        _state == LanConnectionState.connected ||
+        _state == LanConnectionState.connecting ||
+        _state == LanConnectionState.reconnecting) return;
+    final generation = ++_connectionGeneration;
     _reconnectTimer?.cancel();
+    _intentionallyDisconnected = false;
+    _hasSnapshot = false;
+    _hasJoinAck = false;
 
     _updateState(LanConnectionState.reconnecting);
 
     try {
-      _socket = await Socket.connect(
+      final socket = await Socket.connect(
         _lastHostAddress!,
         _lastPort!,
         timeout: const Duration(seconds: 5),
       );
+      if (_disposed || generation != _connectionGeneration) {
+        socket.destroy();
+        return;
+      }
+      _socket = socket;
 
       _updateState(LanConnectionState.connected);
 
       final lineStream = utf8.decoder
-          .bind(_socket!)
+          .bind(socket)
           .transform(const LineSplitter());
 
       _lineSubscription = lineStream.listen(
         _processHostLine,
-        onError: (err) => _handleSocketDisconnect(),
-        onDone: () => _handleSocketDisconnect(),
+        onError: (err) => _handleSocketDisconnect(socket),
+        onDone: () => _handleSocketDisconnect(socket),
         cancelOnError: true,
       );
 
@@ -236,13 +297,18 @@ class LanParticipantClient {
         ),
       );
     } catch (e) {
-      _handleSocketDisconnect();
+      if (!_disposed && generation == _connectionGeneration) {
+        _handleSocketDisconnect();
+      }
     }
   }
 
   /// Cleanly disconnects from the Host.
   Future<void> disconnect() async {
     _intentionallyDisconnected = true;
+    _connectionGeneration++; // Ignore a Socket.connect that finishes after Leave.
+    _hasSnapshot = false;
+    _hasJoinAck = false;
     _reconnectTimer?.cancel();
 
     if (_socket != null && _state == LanConnectionState.connected) {
@@ -281,6 +347,7 @@ class LanParticipantClient {
 
   /// Disposes client streams and timers.
   void dispose() {
+    _disposed = true;
     disconnect();
     _stateController.close();
     _messageController.close();

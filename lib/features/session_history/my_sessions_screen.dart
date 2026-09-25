@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'dart:io';
+import 'package:drift/drift.dart' show Variable;
 import 'package:flutter/material.dart';
 import 'package:readmesh/core/di/injection.dart';
 import 'package:readmesh/core/l10n/app_localizations.dart';
@@ -7,8 +9,9 @@ import 'package:readmesh/data/database/app_database.dart';
 import 'package:readmesh/data/repositories/book_repository.dart';
 import 'package:readmesh/data/repositories/reading_progress_repository.dart';
 import 'package:readmesh/data/repositories/session_repository.dart';
-import 'package:readmesh/features/lan/lan_host_server.dart';
+import 'package:readmesh/data/storage/session_voice_store.dart';
 import 'package:readmesh/features/lan/lan_ip_helper.dart';
+import 'package:readmesh/features/lan/lan_discovery_service.dart';
 import 'package:readmesh/features/profile/device_service.dart';
 import 'package:readmesh/features/reader/pdf_reader_screen.dart';
 import 'package:readmesh/features/room/room_detail_screen.dart';
@@ -20,6 +23,8 @@ class MySessionsScreen extends StatefulWidget {
   final BookRepository? bookRepository;
   final ReadingProgressRepository? progressRepository;
   final DeviceService? deviceService;
+  final SessionVoiceStore? voiceStore;
+  final LanDiscoveryService? discoveryService;
 
   const MySessionsScreen({
     super.key,
@@ -27,6 +32,8 @@ class MySessionsScreen extends StatefulWidget {
     this.bookRepository,
     this.progressRepository,
     this.deviceService,
+    this.voiceStore,
+    this.discoveryService,
   });
 
   @override
@@ -61,7 +68,9 @@ class _MySessionsScreenState extends State<MySessionsScreen> {
     final book = await _bookRepo.getBookById(session.bookId);
     final profile = await _deviceService.getOrCreateCurrentProfile();
     final progress = await _progressRepo.getProgress(session.id, profile.id) ??
-        await _progressRepo.getLatestBookProgress(session.bookId, profile.id);
+        (session.id.startsWith('solo_')
+            ? await _progressRepo.getLatestBookProgress(session.bookId, profile.id)
+            : null);
 
     int currentPage = progress?.currentPage ?? 1;
     int totalPages = progress?.totalPages ?? book?.pageCount ?? 1;
@@ -115,89 +124,125 @@ class _MySessionsScreenState extends State<MySessionsScreen> {
       ),
     );
     if (confirmed == true) {
-      await _sessionRepo.deleteSessionHistoryOnly(session.id);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(l10n.deleted(session.title))),
-        );
+      try {
+        final deleted = await _sessionRepo.deleteSessionHistoryOnly(session.id);
+        if (!deleted) throw StateError('Session not found.');
+        final voiceFiles = widget.voiceStore ??
+            (getIt.isRegistered<SessionVoiceStore>()
+                ? getIt<SessionVoiceStore>() : null);
+        await voiceFiles?.deleteSessionFiles(session.id);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(l10n.deleted(session.title))),
+          );
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('$e'), backgroundColor: Colors.red),
+          );
+        }
       }
     }
   }
 
   Future<void> _resumeSession(Session session) async {
     final l10n = AppLocalizations.of(context);
+    if (session.status == 'ended') return;
     try {
       final book = await _bookRepo.getBookById(session.bookId);
-      if (book == null) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(l10n.roomNotFound), backgroundColor: Colors.red),
-          );
-        }
-        return;
+      if (book == null) throw StateError(l10n.roomNotFound);
+      if (!await File(book.filePath).exists()) {
+        throw StateError('PDF file not found: ${book.filePath}');
       }
-      final file = File(book.filePath);
-      if (!file.existsSync()) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('PDF file not found: ${book.filePath}'), backgroundColor: Colors.red),
-          );
-        }
-        return;
-      }
-
-      final isGroup = !session.id.startsWith('solo_');
       final profile = await _deviceService.getOrCreateCurrentProfile();
-      final isHost = session.hostDeviceId == profile.id;
+      if (!mounted) return;
+      final isGroup = !session.id.startsWith('solo_');
 
-      if (isGroup && isHost && session.status == 'saved') {
-        // Resume as Host: create fresh LAN server with new IP/port, do NOT reuse old socket
-        // We will navigate to RoomDetailScreen which will start fresh server
-        if (mounted) {
-          // First, mark session as active again for resume
-          await _sessionRepo.updateSessionStatus(session.id, 'active');
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (_) => RoomDetailScreen(sessionId: session.id),
-            ),
-          );
-        }
-      } else if (isGroup && !isHost) {
-        // Participant resuming saved group session – should go to room detail, but participant needs host IP
-        // For Phase 6, we treat saved group participant as solo resume if host not available
-        // Show dialog to enter host IP or just open as solo reading with saved page
-        if (mounted) {
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (_) => PdfReaderScreen(
-                book: book,
-                sessionId: session.id,
-                isHost: false,
-              ),
-            ),
-          );
-        }
-      } else {
-        // Solo session resume: open PDF at saved page
-        if (mounted) {
-          // Mark as active on resume
-          if (session.status == 'saved') {
-            await _sessionRepo.updateSessionStatus(session.id, 'active');
+      if (isGroup && session.hostDeviceId != profile.id) {
+        // Resolve the same room code via a *fresh* UDP advertisement when the
+        // Host has resumed. Manual IP:port is only a fallback for blocked UDP.
+        final discovery = widget.discoveryService ??
+            (getIt.isRegistered<LanDiscoveryService>()
+                ? getIt<LanDiscoveryService>() : null);
+        if (discovery != null) {
+          if (!discovery.isListening) await discovery.startListening();
+          var match = discovery.roomForCode(session.id);
+          if (match == null) {
+            await Future<void>.delayed(const Duration(milliseconds: 2400));
+            match = discovery.roomForCode(session.id);
           }
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (_) => PdfReaderScreen(
-                book: book,
-                sessionId: session.id,
-                isHost: true,
+          if (!mounted) return;
+          final host = match;
+          if (host != null && LanIpHelper.isValidIPv4(host.hostIp)) {
+            await Navigator.push(context, MaterialPageRoute(builder: (_) =>
+                RoomDetailScreen(sessionId: session.id,
+                    hostAddress: host.hostIp, port: host.port)));
+            return;
+          }
+        }
+        // Never open a disconnected, non-navigable participant reader or reuse
+        // an old Host IP when discovery does not find a live endpoint.
+        final controller = TextEditingController();
+        final hostInput = await showDialog<String>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: Text(l10n.joinReadingRoom),
+            content: TextField(
+              controller: controller,
+              decoration: InputDecoration(
+                labelText: l10n.hostLanIpExample,
+                helperText: l10n.hostLanIpHint,
               ),
             ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx), child: Text(l10n.cancel)),
+              ElevatedButton(
+                onPressed: () => Navigator.pop(ctx, controller.text.trim()),
+                child: Text(l10n.join),
+              ),
+            ],
+          ),
+        );
+        controller.dispose();
+        if (!mounted || hostInput == null) return;
+        final endpoint = LanIpHelper.parseHostPort(hostInput);
+        if (endpoint == null || LanIpHelper.isLoopback(endpoint.ip)) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(l10n.invalidIp), backgroundColor: Colors.red),
           );
+          return;
         }
+        await Navigator.push(
+          context,
+          MaterialPageRoute(builder: (_) => RoomDetailScreen(
+            sessionId: session.id,
+            hostAddress: endpoint.ip,
+            port: endpoint.port,
+          )),
+        );
+        return;
       }
+
+      if (isGroup) {
+        // A saved Host becomes active only after the fresh server has started.
+        // RoomDetail owns that transition and never creates a new room/code.
+        await Navigator.push(context, MaterialPageRoute(builder: (_) =>
+            RoomDetailScreen(sessionId: session.id,
+                resumeSavedSession: session.status == 'saved')));
+        return;
+      }
+      final resumed = await _sessionRepo.updateSessionStatus(session.id, 'active');
+      if (!resumed) throw StateError(l10n.cannotJoinEnded);
+      if (!mounted) return;
+      await Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => PdfReaderScreen(
+          book: book, sessionId: session.id, isHost: true,
+          readingProgressRepository: _progressRepo,
+          deviceService: _deviceService, sessionRepository: _sessionRepo,
+        )),
+      );
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -215,7 +260,9 @@ class _MySessionsScreenState extends State<MySessionsScreen> {
         title: Text(l10n.mySessions),
       ),
       body: StreamBuilder<List<Session>>(
-        stream: _sessionRepo.watchSavedSessions(),
+        // Include active records too: force-closing an app must never make an
+        // otherwise resumable SQLite session disappear from My Sessions.
+        stream: _sessionRepo.watchAllSessions(),
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {
             return const Center(child: CircularProgressIndicator());
@@ -255,6 +302,10 @@ class _MySessionsScreenState extends State<MySessionsScreen> {
                   final lastActivity = _formatLastActivity(session.updatedAt, l10n);
                   final isSaved = session.status == 'saved';
                   final isEnded = session.status == 'ended';
+                  final statusLabel = isSaved ? l10n.savedStatus : isEnded
+                      ? l10n.ended : session.status == 'paused'
+                          ? l10n.pausedStatus : session.status == 'created'
+                              ? l10n.created : l10n.active;
 
                   return Card(
                     key: Key('session_card_${session.id}'),
@@ -269,28 +320,35 @@ class _MySessionsScreenState extends State<MySessionsScreen> {
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
                               Expanded(
-                                child: Text(
-                                  book?.title ?? session.title,
-                                  style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                                  maxLines: 2,
-                                  overflow: TextOverflow.ellipsis,
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(session.title,
+                                      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                                      maxLines: 1, overflow: TextOverflow.ellipsis),
+                                    Text(book?.title ?? l10n.roomBook,
+                                      style: const TextStyle(fontSize: 12),
+                                      maxLines: 1, overflow: TextOverflow.ellipsis),
+                                  ],
                                 ),
                               ),
                               Container(
                                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                                 decoration: BoxDecoration(
-                                  color: isSaved ? const Color(0xFFEFF6FF) : const Color(0xFFF1F5F9),
+                                  color: isSaved ? const Color(0xFFEFF6FF) : isEnded
+                                      ? const Color(0xFFF1F5F9) : const Color(0xFFECFDF5),
                                   borderRadius: BorderRadius.circular(6),
                                   border: Border.all(
                                     color: isSaved ? const Color(0xFFBFDBFE) : const Color(0xFFCBD5E1),
                                   ),
                                 ),
                                 child: Text(
-                                  isSaved ? l10n.savedStatus : l10n.ended,
+                                  statusLabel,
                                   style: TextStyle(
                                     fontSize: 11,
                                     fontWeight: FontWeight.bold,
-                                    color: isSaved ? const Color(0xFF1D4ED8) : const Color(0xFF64748B),
+                                    color: isSaved ? const Color(0xFF1D4ED8) : isEnded
+                                        ? const Color(0xFF64748B) : const Color(0xFF047857),
                                   ),
                                 ),
                               ),
@@ -319,6 +377,12 @@ class _MySessionsScreenState extends State<MySessionsScreen> {
                             ],
                           ),
                           const SizedBox(height: 6),
+                          Text(
+                            '${l10n.tr('sessionCreatedAt')}: '
+                            '${session.createdAt.toLocal().toIso8601String().substring(0, 16).replaceFirst('T', ' ')}',
+                            style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)),
+                          ),
+                          const SizedBox(height: 6),
                           Row(
                             children: [
                               Icon(
@@ -344,7 +408,8 @@ class _MySessionsScreenState extends State<MySessionsScreen> {
                             children: [
                               OutlinedButton.icon(
                                 key: Key('delete_session_${session.id}'),
-                                onPressed: () => _confirmDelete(session),
+                                onPressed: isSaved || isEnded
+                                    ? () => _confirmDelete(session) : null,
                                 icon: AppIcon.delete(size: 18),
                                 label: Text(l10n.deleteHistory),
                                 style: OutlinedButton.styleFrom(
@@ -362,7 +427,8 @@ class _MySessionsScreenState extends State<MySessionsScreen> {
                                 icon: AppIcon.play(size: 18),
                                 label: Text(l10n.resumeUpper),
                                 style: ElevatedButton.styleFrom(
-                                  backgroundColor: isSaved ? const Color(0xFF2563EB) : const Color(0xFF94A3B8),
+                                  backgroundColor: isEnded ? const Color(0xFF94A3B8)
+                                      : const Color(0xFF2563EB),
                                   visualDensity: VisualDensity.compact,
                                 ),
                               ),
