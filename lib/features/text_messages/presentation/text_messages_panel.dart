@@ -766,8 +766,8 @@ class _TextMessagesPanelState extends State<TextMessagesPanel> {
       key: const Key('text_messages_panel'),
       decoration: const BoxDecoration(color: Color(0xFFF8FAFC),
         border: Border(top: BorderSide(color: Color(0xFFCBD5E1)))),
-      child: Column(children: [
-        Expanded(child: StreamBuilder<List<TextMessage>>(
+      child: LayoutBuilder(builder: (context, panelConstraints) =>
+        StreamBuilder<List<TextMessage>>(
           key: ValueKey('messages_${widget.sessionId}_${widget.pageNumber}_$_streamRevision'),
           stream: _pageMessages,
           builder: (context, textSnapshot) => StreamBuilder<List<AudioMessage>>(
@@ -856,12 +856,22 @@ class _TextMessagesPanelState extends State<TextMessagesPanel> {
                               : _audioTile(message as AudioMessage, l10n);
                         },
                       )),
+                // The composer remains at the bottom. On a short Reader or
+                // with a large text scale/keyboard, scroll *only* this bounded
+                // footer instead of letting it displace the message list.
+                ConstrainedBox(
+                  key: const Key('discussion_composer'),
+                  constraints: BoxConstraints(
+                      maxHeight: panelConstraints.maxHeight * 0.7),
+                  child: SingleChildScrollView(
+                    child: _composer(l10n),
+                  ),
+                ),
               ]);
             },
           ),
-        )),
-        _composer(l10n),
-      ]),
+        ),
+      ),
     );
   }
 }

@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:readmesh/core/di/injection.dart';
 import 'package:readmesh/core/l10n/app_localizations.dart';
@@ -21,7 +22,12 @@ void main() {
   Widget app(Widget home) => MaterialApp(
     locale: const Locale('en'),
     supportedLocales: const [Locale('en'), Locale('ar')],
-    localizationsDelegates: const [AppLocalizationsDelegate()],
+    localizationsDelegates: const [
+      AppLocalizationsDelegate(),
+      GlobalMaterialLocalizations.delegate,
+      GlobalWidgetsLocalizations.delegate,
+      GlobalCupertinoLocalizations.delegate,
+    ],
     home: home,
   );
 

@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:readmesh/core/l10n/app_localizations.dart';
 import 'package:readmesh/data/database/app_database.dart';
@@ -33,7 +34,12 @@ void main() {
   Widget app(int page) => MaterialApp(
     locale: const Locale('ar'),
     supportedLocales: const [Locale('ar'), Locale('en')],
-    localizationsDelegates: const [AppLocalizationsDelegate()],
+    localizationsDelegates: const [
+      AppLocalizationsDelegate(),
+      GlobalMaterialLocalizations.delegate,
+      GlobalWidgetsLocalizations.delegate,
+      GlobalCupertinoLocalizations.delegate,
+    ],
     home: Scaffold(body: SizedBox(height: 440, child: TextMessagesPanel(
       sessionId: 'solo_audio-ui', pageNumber: page,
       senderId: 'owner', senderName: 'أحمد', canSend: true,
@@ -78,6 +84,10 @@ void main() {
     await tester.pumpWidget(app(8));
     await waitForIO(tester);
     final send = find.byKey(const Key('send_text_message_button'));
+    final panelBottom = tester.getBottomLeft(
+        find.byKey(const Key('text_messages_panel'))).dy;
+    expect(tester.getBottomLeft(send).dy, lessThanOrEqualTo(panelBottom));
+    expect(tester.takeException(), isNull);
     expect((tester.widget<IconButton>(send).icon as Icon).icon,
       Icons.mic_none);
     expect(tester.widget<IconButton>(send).onPressed, isNotNull);
@@ -95,6 +105,9 @@ void main() {
     await waitForIO(tester);
     final sameFile = service.recordingPath!;
     expect(find.byKey(const Key('audio_recording_timer')), findsOneWidget);
+    expect(tester.getBottomLeft(find.byKey(const Key('stop_audio_recording'))).dy,
+      lessThanOrEqualTo(panelBottom));
+    expect(tester.takeException(), isNull);
     expect(await audio.getPage('solo_audio-ui', 8), isEmpty);
     await tester.tap(find.byKey(const Key('pause_audio_recording')));
     await tester.pump();
@@ -108,6 +121,9 @@ void main() {
     await tester.tap(find.byKey(const Key('stop_audio_recording')));
     await waitForIO(tester);
     expect(find.byKey(const Key('audio_draft_preview')), findsOneWidget);
+    expect(tester.getBottomLeft(find.byKey(const Key('send_audio_message'))).dy,
+      lessThanOrEqualTo(panelBottom));
+    expect(tester.takeException(), isNull);
     expect(await audio.getPage('solo_audio-ui', 8), isEmpty);
     expect(await File(sameFile).exists(), isTrue);
     expect(find.text('00:02'), findsWidgets);

@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:readmesh/core/l10n/app_localizations.dart';
 import 'package:readmesh/data/database/app_database.dart';
@@ -37,7 +38,12 @@ void main() {
   Widget app(int page, {Widget? pdf}) => MaterialApp(
     locale: const Locale('ar'),
     supportedLocales: const [Locale('ar'), Locale('en')],
-    localizationsDelegates: const [AppLocalizationsDelegate()],
+    localizationsDelegates: const [
+      AppLocalizationsDelegate(),
+      GlobalMaterialLocalizations.delegate,
+      GlobalWidgetsLocalizations.delegate,
+      GlobalCupertinoLocalizations.delegate,
+    ],
     home: Scaffold(body: Column(children: [
       if (pdf != null) Expanded(child: pdf),
       SizedBox(height: 320, child: TextMessagesPanel(
@@ -139,7 +145,13 @@ void main() {
     controller = deferred;
     await tester.pumpWidget(MaterialApp(
       locale: const Locale('ar'),
-      localizationsDelegates: const [AppLocalizationsDelegate()],
+      supportedLocales: const [Locale('ar'), Locale('en')],
+      localizationsDelegates: const [
+        AppLocalizationsDelegate(),
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
       home: Scaffold(body: SizedBox(height: 160, child: TextMessagesPanel(
         sessionId: 'solo_book-ui', pageNumber: 8,
         senderId: 'dev-a', senderName: 'أحمد', canSend: true,

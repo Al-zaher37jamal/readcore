@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:readmesh/core/di/injection.dart';
 import 'package:readmesh/core/l10n/app_localizations.dart';
@@ -48,7 +49,12 @@ void main() {
       await tester.pumpWidget(const MaterialApp(
         locale: Locale('ar'),
         supportedLocales: [Locale('ar'), Locale('en')],
-        localizationsDelegates: [AppLocalizationsDelegate()],
+        localizationsDelegates: [
+          AppLocalizationsDelegate(),
+          GlobalMaterialLocalizations.delegate,
+          GlobalWidgetsLocalizations.delegate,
+          GlobalCupertinoLocalizations.delegate,
+        ],
         home: PdfLibraryScreen(),
       ));
       await tester.pump();
