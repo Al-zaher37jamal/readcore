@@ -39,7 +39,7 @@ class LanHostServer {
 
   ServerSocket? _serverSocket;
   int _actualPort = 0;
-  String _localIp = '127.0.0.1';
+  String _localIp = '';
 
   // Authoritative state
   int _currentPage;
@@ -55,6 +55,8 @@ class LanHostServer {
       StreamController<List<LanConnectedParticipant>>.broadcast();
 
   bool _isRunning = false;
+  bool _disposed = false;
+  int _lifecycleGeneration = 0;
 
   LanHostServer({
     required this.sessionId,
@@ -96,15 +98,28 @@ class LanHostServer {
   /// Binds to InternetAddress.anyIPv4 to accept remote LAN connections, not loopback only.
   Future<void> start({InternetAddress? bindAddress}) async {
     if (_isRunning) return;
-
+    if (_disposed || _sessionStatus == 'saved' || _sessionStatus == 'ended') {
+      throw StateError('A closed room cannot accept LAN joins.');
+    }
+    final generation = _lifecycleGeneration;
     _localIp = await getLocalLanIPv4();
+    if (_disposed || generation != _lifecycleGeneration) return;
+    if (bindAddress == null && LanIpHelper.isLoopback(_localIp)) {
+      throw StateError('No non-loopback LAN address is available.');
+    }
     final address = bindAddress ?? InternetAddress.anyIPv4;
 
-    _serverSocket = await ServerSocket.bind(address, requestedPort);
-    _actualPort = _serverSocket!.port;
+    final server = await ServerSocket.bind(address, requestedPort);
+    if (_disposed || generation != _lifecycleGeneration ||
+        _sessionStatus == 'saved' || _sessionStatus == 'ended') {
+      await server.close();
+      return;
+    }
+    _serverSocket = server;
+    _actualPort = server.port;
     _isRunning = true;
 
-    _serverSocket!.listen(
+    server.listen(
       _handleClientConnection,
       onError: (err) {
         stop();
@@ -141,8 +156,15 @@ class LanHostServer {
 
   /// Processes a single newline-delimited JSON line received from a participant.
   void _processClientLine(Socket clientSocket, String line) {
+    if (line.length > 65536) return; // bounded Phase 6 voice chunks
     try {
       final msg = LanMessage.deserialize(line);
+      if (msg.sessionId != sessionId) return;
+      // Only a successfully joined socket may publish content/progress. The
+      // claimed author must match that socket's joined device identity.
+      if (msg.type != LanMessageType.join &&
+          (_clients[clientSocket]?.deviceId != msg.senderDeviceId ||
+              _sessionStatus == 'ended' || _sessionStatus == 'saved')) return;
       _messageController.add(msg);
 
       switch (msg.type) {
@@ -172,6 +194,19 @@ class LanHostServer {
 
   /// Handles participant handshake: registers participant, sends JOIN_ACK and STATE_SNAPSHOT.
   void _handleJoin(Socket clientSocket, LanMessage msg) {
+    if (msg.sessionId != sessionId || msg.senderDeviceId.isEmpty ||
+        _sessionStatus == 'saved' || _sessionStatus == 'ended') {
+      clientSocket.destroy();
+      return;
+    }
+
+    // Reconnecting a device replaces its previous socket, not its participant.
+    for (final socket in _clients.keys.toList()) {
+      if (_clients[socket]?.deviceId == msg.senderDeviceId && socket != clientSocket) {
+        _disconnectClient(socket);
+      }
+    }
+
     final participant = LanConnectedParticipant(
       deviceId: msg.senderDeviceId,
       displayName: msg.senderName ?? 'Participant',
@@ -216,6 +251,27 @@ class LanHostServer {
     }
   }
 
+  /// Send a bounded content packet to one joined peer. Flushing avoids
+  /// queueing an entire audio file in the socket's output buffer at once.
+  Future<bool> sendToParticipant(String deviceId, LanMessage message) async {
+    if (!_isRunning || message.sessionId != sessionId) return false;
+    for (final entry in _clients.entries.toList()) {
+      if (entry.value.deviceId != deviceId) continue;
+      try {
+        entry.key.write(message.serialize());
+        await entry.key.flush().timeout(const Duration(seconds: 5));
+        return _clients.containsKey(entry.key);
+      } catch (_) {
+        _disconnectClient(entry.key);
+        return false;
+      }
+    }
+    return false;
+  }
+
+  bool hasParticipant(String deviceId) =>
+      _clients.values.any((member) => member.deviceId == deviceId);
+
   /// Broadcasts a message to all connected participant sockets.
   void broadcast(LanMessage message) {
     final line = message.serialize();
@@ -236,6 +292,7 @@ class LanHostServer {
 
   /// Authoritative: Host turned the page. Updates internal state and broadcasts to all participants.
   void broadcastPageChange(int newPage, [int? totalPages]) {
+    if (_sessionStatus == 'saved' || _sessionStatus == 'ended') return;
     _currentPage = newPage;
     if (totalPages != null) _totalPages = totalPages;
 
@@ -285,6 +342,18 @@ class LanHostServer {
     );
   }
 
+  /// Authoritative: Host saved and left; clients keep history and stop reconnecting.
+  void broadcastSessionSaved() {
+    _sessionStatus = 'saved';
+    broadcast(
+      LanMessage.sessionSaved(
+        sessionId: sessionId,
+        hostDeviceId: hostDeviceId,
+        currentPage: _currentPage,
+      ),
+    );
+  }
+
   /// Authoritative: Host ended session.
   void broadcastSessionEnded() {
     _sessionStatus = 'ended';
@@ -315,13 +384,19 @@ class LanHostServer {
 
   /// Closes all participant connections, closes server socket, and releases resources.
   Future<void> stop() async {
+    _lifecycleGeneration++; // Cancel an in-flight start before it can bind.
     if (!_isRunning) return;
     _isRunning = false;
 
     for (final socket in _clients.keys.toList()) {
       try {
+        // Flush and send FIN rather than resetting the connection: a reset can
+        // drop the final sessionSaved/sessionEnded packet on a real network.
+        await socket.flush().timeout(const Duration(seconds: 2));
+        await socket.close().timeout(const Duration(seconds: 2));
+      } catch (_) {
         socket.destroy();
-      } catch (_) {}
+      }
     }
     _clients.clear();
 
@@ -335,6 +410,7 @@ class LanHostServer {
 
   /// Fully disposes controllers.
   void dispose() {
+    _disposed = true;
     stop();
     _messageController.close();
     _participantsController.close();

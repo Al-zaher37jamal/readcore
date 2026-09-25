@@ -2,7 +2,7 @@ import 'package:drift/drift.dart';
 import 'package:readmesh/core/errors/exceptions.dart';
 
 class SchemaMigrations {
-  static const int currentSchemaVersion = 3;
+  static const int currentSchemaVersion = 5;
 
   /// Builds the Drift migration strategy with startup integrity checks,
   /// WAL configuration, foreign key enforcement, and version upgrades.
@@ -18,6 +18,8 @@ class SchemaMigrations {
         // Phase 6: ensure new columns exist even if g.dart not regenerated yet
         await _migrateToVersion3(db);
         await _createVersion3Indexes(db);
+        await _migrateToVersion4(db);
+        await _migrateToVersion5(db);
       },
       onUpgrade: (Migrator m, int from, int to) async {
         if (from < 2) {
@@ -29,6 +31,13 @@ class SchemaMigrations {
           // Add new columns to sessions table for saved/ended lifecycle
           await _migrateToVersion3(db);
           await _createVersion3Indexes(db);
+        }
+        if (from < 4) {
+          // Preserve earlier Notes and Messages data; add only missing columns.
+          await _migrateToVersion4(db);
+        }
+        if (from < 5) {
+          await _migrateToVersion5(db);
         }
       },
       beforeOpen: (OpeningDetails details) async {
@@ -133,5 +142,54 @@ class SchemaMigrations {
     await db.customStatement(
       'CREATE INDEX IF NOT EXISTS idx_sessions_type ON sessions(session_type);',
     );
+  }
+
+  /// Phase 6 content lives in the existing 12-table SQLite database. The
+  /// checked-in generated Drift schema predates the extra columns, so on a
+  /// fresh database and on an upgrade we add only columns that are missing.
+  /// Regenerating app_database.g.dart later is safe: existing columns are
+  /// detected instead of relying on swallowed ALTER errors.
+  static Future<void> _migrateToVersion4(GeneratedDatabase db) async {
+    await _addColumn(db, 'notes', 'session_id',
+        'TEXT REFERENCES sessions(id) ON DELETE CASCADE');
+    await _addColumn(db, 'notes', 'note_kind',
+        "TEXT NOT NULL DEFAULT 'note' CHECK (note_kind IN ('note', 'highlight'))");
+    await _addColumn(db, 'notes', 'visibility',
+        "TEXT NOT NULL DEFAULT 'personal' CHECK (visibility IN ('personal', 'shared'))");
+    await _addColumn(db, 'notes', 'is_pinned',
+        'INTEGER NOT NULL DEFAULT 0 CHECK (is_pinned IN (0, 1))');
+    await _addColumn(db, 'notes', 'region_width', 'REAL');
+    await _addColumn(db, 'notes', 'region_height', 'REAL');
+    await _addColumn(db, 'messages', 'page_number',
+        'INTEGER NOT NULL DEFAULT 1');
+    await _addColumn(db, 'messages', 'voice_path', 'TEXT');
+    await _addColumn(db, 'messages', 'duration_ms', 'INTEGER');
+    await _addColumn(db, 'messages', 'voice_sha256', 'TEXT');
+    await _addColumn(db, 'messages', 'voice_bytes', 'INTEGER');
+    await db.customStatement(
+        'CREATE INDEX IF NOT EXISTS idx_notes_session_page ON notes(session_id, page_number);');
+    await db.customStatement(
+        'CREATE INDEX IF NOT EXISTS idx_messages_session_page ON messages(session_id, page_number);');
+  }
+
+  /// Text-message metadata on the existing messages table. A nullable
+  /// updated_at is required for compatibility with older Drift-generated
+  /// inserts; older rows are backfilled, and new text inserts always set it.
+  static Future<void> _migrateToVersion5(GeneratedDatabase db) async {
+    await _addColumn(db, 'messages', 'updated_at', 'INTEGER');
+    await _addColumn(db, 'messages', 'status',
+        "TEXT NOT NULL DEFAULT 'local'");
+    await db.customStatement(
+        'UPDATE messages SET updated_at = created_at WHERE updated_at IS NULL');
+    await db.customStatement('CREATE INDEX IF NOT EXISTS '
+        'idx_messages_session_page_created '
+        'ON messages(session_id, page_number, created_at)');
+  }
+
+  static Future<void> _addColumn(GeneratedDatabase db, String table,
+      String name, String declaration) async {
+    final columns = await db.customSelect('PRAGMA table_info($table)').get();
+    if (columns.any((row) => row.data['name'] == name)) return;
+    await db.customStatement('ALTER TABLE $table ADD COLUMN $name $declaration');
   }
 }
