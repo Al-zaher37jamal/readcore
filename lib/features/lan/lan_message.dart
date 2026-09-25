@@ -23,6 +23,9 @@ enum LanMessageType {
   /// Host resumed the reading session.
   sessionResumed,
 
+  /// Host saved and left; this session can be resumed with a new LAN connection.
+  sessionSaved,
+
   /// Host ended the reading session.
   sessionEnded,
 
@@ -34,6 +37,12 @@ enum LanMessageType {
 
   /// Heartbeat pong reply.
   pong,
+
+  // Phase 6 appends message names; existing JSON names and enum values stay intact.
+  contentUpsert, // note/highlight/text/voice metadata
+  voiceChunk, // bounded base64 AAC/M4A fragment
+  participantProgress, // independent local reading position
+  participantTime, // monotonic cumulative foreground seconds per device
 }
 
 /// Educational LAN message packet sent as newline-delimited JSON over TCP.
@@ -171,6 +180,21 @@ class LanMessage {
     );
   }
 
+  /// Creates a SESSION_SAVED message (Host -> Participants).
+  factory LanMessage.sessionSaved({
+    required String sessionId,
+    required String hostDeviceId,
+    int? currentPage,
+  }) {
+    return LanMessage(
+      type: LanMessageType.sessionSaved,
+      sessionId: sessionId,
+      senderDeviceId: hostDeviceId,
+      currentPage: currentPage,
+      sessionStatus: 'saved',
+    );
+  }
+
   /// Creates a SESSION_ENDED message (Host -> Participants).
   factory LanMessage.sessionEnded({
     required String sessionId,
@@ -211,6 +235,56 @@ class LanMessage {
       senderDeviceId: deviceId,
     );
   }
+
+  /// Page-scoped note, highlight or discussion metadata. Personal annotations
+  /// must never be passed to this constructor by the caller.
+  factory LanMessage.contentUpsert({
+    required String sessionId,
+    required String deviceId,
+    required Map<String, dynamic> content,
+  }) => LanMessage(
+        type: LanMessageType.contentUpsert,
+        sessionId: sessionId,
+        senderDeviceId: deviceId,
+        payload: content,
+      );
+
+  factory LanMessage.voiceChunk({
+    required String sessionId,
+    required String deviceId,
+    required String messageId,
+    required int index,
+    required int total,
+    required String bytesBase64,
+  }) => LanMessage(
+        type: LanMessageType.voiceChunk,
+        sessionId: sessionId,
+        senderDeviceId: deviceId,
+        payload: {
+          'id': messageId, 'index': index, 'total': total,
+          'bytes': bytesBase64,
+        },
+      );
+
+  factory LanMessage.participantProgress({
+    required String sessionId,
+    required String deviceId,
+    required int page,
+    required int totalPages,
+  }) => LanMessage(
+        type: LanMessageType.participantProgress,
+        sessionId: sessionId,
+        senderDeviceId: deviceId,
+        currentPage: page,
+        totalPages: totalPages,
+      );
+
+  factory LanMessage.participantTime({
+    required String sessionId, required String deviceId,
+    required int totalSeconds,
+  }) => LanMessage(type: LanMessageType.participantTime,
+      sessionId: sessionId, senderDeviceId: deviceId,
+      payload: {'totalSeconds': totalSeconds});
 
   /// Creates a PONG heartbeat response.
   factory LanMessage.pong({

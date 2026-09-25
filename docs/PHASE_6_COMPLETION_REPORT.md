@@ -1,158 +1,119 @@
-# Phase 6: Session History and Resumable Local Reading – Completion Report
+# ReadMesh — تقرير تنفيذ Phase 6
 
-**Date:** 2026-09-22
-**Branch:** arena/01a0bf89-readmwsh
-**Commit:** a356307 (Phase 6 on top of 6e612b7 Phase 5 accepted)
-**Flutter:** 3.24.5 / Dart 3.5.4 (no upgrade)
+> **ملاحظة أحدث:** يصف هذا التقرير تنفيذ Notes/Voice/LAN الأسبق. بعد طلب الرسائل النصية المحلية صار Reader الافتراضي يعرض `TextMessagesPanel` ضمن `Scaffold.body` بدل إظهار أزرار Notes/Highlight أو نافذة المحتوى القديمة؛ تفاصيل المسار والاختبارات غير المُشغّلة في [تقرير الرسائل النصية](PHASE_6_TEXT_MESSAGES_REPORT.md). كود الواجهة القديمة باقٍ باختيار صريح فقط. الحالة العامة **NOT COMPLETE** حتى اختبار Flutter وAPK على Android.
 
-## Overview
-Phase 6 implements local session history "جلساتي" / "My Sessions" with resumable reading, Save and Leave vs End Reading Session lifecycle, auto-save, and optional timer/stats. No Supabase/Internet, reuse existing Drift SQLite.
+**التاريخ:** 2026-09-24
+**الفرع:** `arena/01a0cd05-readcore`
+**مرجع المقارنة:** `7409cca7c5ae64fb2ea843237ce4d5c90a412e46`
+**الحالة:** **NOT COMPLETE** — تغييرات التنفيذ والاختبارات المكتوبة موجودة، لكن لم تُحلّل أو تُشغّل بـFlutter، ولم يُبنَ APK، ولم تُجرّب على هاتفين. لا تمثل هذه الوثيقة إثبات قبول على الأجهزة.
 
-## DB Migrations
-- **Previous version:** 2
-- **New version:** 3 in `lib/data/database/migrations/schema_migrations.dart`
-- **Migration logic:**
-  - `onCreate`: createAll + _createVersion2Indexes + _migrateToVersion3 + _createVersion3Indexes
-  - `onUpgrade` from <3: _migrateToVersion3 + _createVersion3Indexes
-  - `_migrateToVersion3`: ALTER TABLE sessions ADD COLUMN last_page INTEGER, total_pages INTEGER, last_activity_at INTEGER, session_type TEXT NOT NULL DEFAULT 'solo', timer_enabled INTEGER NOT NULL DEFAULT 0 CHECK, stats_enabled INTEGER NOT NULL DEFAULT 0 CHECK – wrapped in try/catch for idempotency
-  - `_createVersion3Indexes`: idx_sessions_status, idx_sessions_last_activity, idx_sessions_type
-- **Table definition:** `lib/data/database/tables/sessions_table.dart` added nullable lastPage, totalPages, lastActivityAt, sessionType default solo, timerEnabled default false, statsEnabled default false
-- **Generated code:** `app_database.g.dart` not regenerated (no flutter in sandbox), but migration adds columns via raw SQL with defaults, so old generated $SessionsTableTable still works (extra columns ignored, defaults used). On fresh install, onCreate runs ALTER to add columns after createAll.
-- **Reuse:** sessions, session_members, session_events, reading_progress, books, kvs – no second DB, no PDF binary in SQLite, metadata only
+## تشخيص الـAPK الذي اختُبر ولم تظهر فيه الإضافات
 
-## SessionRepository Extensions
-`lib/data/repositories/session_repository.dart`:
-- `getSavedSessions()` / `watchSavedSessions()`: filter status saved|ended, order by updatedAt desc
-- `saveAndLeaveSession(id, lastPage, totalPages)`: UPDATE status='saved', updated_at now, last_page/total_pages/last_activity_at via raw SQL + Drift replace, preserves history
-- `endReadingSession(id)`: status='ended', disconnect logic, history remains
-- `updateSessionLastPage(id, currentPage, totalPages)`: auto-save hook for My Sessions card
-- `deleteSessionHistoryOnly(id)`: DELETE sessions CASCADE removes members/events/progress but keeps books (FK cascade, books not deleted)
-- `updateSessionFlags(id, timerEnabled, statsEnabled)`: stores in sessions columns + KVS fallback keys session_{id}_timer / session_{id}_stats
-- `getSessionFlags(id)`: reads from sessions table if columns exist, else KVS, returns timerEnabled, statsEnabled, sessionType (solo/group via id prefix)
+- **قبل هذه المعالجة:** `git branch --show-current` = `arena/01a0cd05-readcore`، و`HEAD` و`main` و`origin/main` = `7409cca7c5ae64fb2ea843237ce4d5c90a412e46`. فحص `git ls-remote origin` أعاد `main` فقط عند الـSHA نفسه، لا فرع Arena منشورًا. كانت تغييرات Phase 6 الإضافية **35 مدخلًا في `git status --short` (بعضها مجلد غير متتبَّع يحوي عدة ملفات)، غير مُدرجة في أي commit**؛ أي بناء من `main` لا يحتويها. سيصبح commit التسليم مرجعًا يمكن التحقق منه عبر `git log -1 --format=%H` على فرع Arena؛ لا يصير `main` محدثًا إلا بعد مراجعة/دمج منفصل.
+- **دليل غياب الواجهة في `main`:** `git show main:lib/main.dart` يبيّن تبويب My Sessions القديم، و`git show main:lib/features/reader/pdf_reader_screen.dart` لا يحتوي `reader_notes_discussion`/`reader_highlight`. كذلك لا يوجد أصلًا `lib/features/session_content/session_content_panel.dart` أو `session_content_sync.dart` في شجرة `main`. أما شجرة العمل الحالية: `main.dart` يربط تبويب My Sessions، و`setupLocator()` يسجّل محتوى Phase 6 والصوت، و`PdfReaderScreen` ينشئ `SessionContentSync` ويعرض أزرار Notes/Highlight، و`RoomDetailScreen` يعرض الرمز والمشاركة، واللوحة تعرض Pin/Discussion/Voice. **الغياب في APK يتوافق مع بناء نسخة لا تحتوي التغييرات، لكن لا يوجد APK المستخدم ولا SQLite هاتفه هنا لإثبات محتواه أو حالة جلسته حرفيًا.** إصدار التطبيق في `pubspec.yaml` باقٍ `1.0.0+1` ولا يثبت SHA البناء.
+- **المسار القديم في `main`:** زر Save في القارئ يستدعي `saveAndLeaveSession`، لكن `_handleSaveAndLeave` يبتلع كل استثناء ويخرج من الشاشة مهما كانت نتيجة الكتابة؛ هكذا قد يفشل الحفظ دون إنذار. لا دليل يثبت أن SQLite هاتف المستخدم حملت `ended` بالفعل؛ التصرّف الظاهر وحده لا يكفي. في الكود الذي عولج هنا، زر الرجوع → Save → انتظار حفظ التقدم → **UPDATE ذري ومشروط** لـ`status='saved'` وصفحة/وقت SQLite → فحص نتيجة الكتابة → بث `sessionSaved`/إغلاق LAN → خروج. أما End فيمر وحده عبر `endReadingSession` → `status='ended'` وبث `sessionEnded`. لا يتم الخروج عند إخفاق Save.
+- **إصلاح مسار الاستئناف:** Host لـGroup Resume يبدأ socket جديدًا ويربط TCP أولًا، ثم يغيّر `saved → active` بنفس session ID، ثم ينشر UDP؛ عند فشل الربط تبقى الجلسة `saved` ولا يظهر Host وهمي. Solo Resume يحتفظ بنفس session ID وتقدّم الصفحة، وMy Sessions ما زال ظاهرًا في navigation. تُرفض كتابة `ended/saved` عبر `updateSessionStatus` العامة، حتى في `LanSyncCoordinator`، وتستخدم الرسائل المعتمدة من Host دالتي Save/End الصريحتين. أُضيفت اختبارات SQLite بعد إغلاق/إعادة فتح الملف واختبارات ربط واجهة Reader وحالتي نجاح/فشل Group Resume، **ولم تُنفّذ بعد**.
+- **لتحديد APK المستخدم:** لا يوجد ملف `.apk` في checkout، ولا سجل بناء مرتبط به. احتفظ بـ`git rev-parse HEAD` و`sha256sum build/app/outputs/flutter-apk/app-debug.apk` وقت البناء من فرع التسليم بعد `git status --short`، ثم قارن SHA وملف APK الذي ثُبِّت فعلاً. لا تصفح الكود وحده يثبت من أي commit بُني APK خارجي؛ بعد دمج التغييرات في `main` يلزم بناء APK جديد وإعادة تثبيته دون حذف بيانات PDF/SQLite، ثم قراءة `sessions.status` للتحقق على الجهاز.
 
-## UI Implementation
+## 1. Implemented — ما أُضيف إلى الكود (غير متحقق منه تشغيليًا)
 
-### 1. Leave Active Session Dialog
-`lib/features/reader/pdf_reader_screen.dart`:
-- `PopScope(canPop: false, onPopInvokedWithResult)` intercepts back
-- Dialog key `leave_session_dialog` title "ماذا تريد أن تفعل؟" / "What would you like to do?"
-- Options:
-  - `save_and_leave_button` – "حفظ ومغادرة" / "Save and Leave" (Elevated blue) – saves position/bookId/path/metadata/role/identity/state/timestamp, leaves cleanly, appears in جلساتي
-  - `end_reading_session_button` – "إنهاء جلسة القراءة" / "End Reading Session" (red) – not "إنهاء الجلسة نهائيًا"
-  - `cancel_leave_button` – "إلغاء" / "Cancel"
-- End confirmation `confirm_end_dialog` title "إنهاء جلسة القراءة" body "سيؤدي إنهاء جلسة القراءة إلى قطع اتصال المشاركين وإغلاق الجلسة الحالية. سيبقى سجل الجلسة محفوظًا ويمكن حذفه لاحقًا." / English equivalent, buttons إلغاء / إنهاء جلسة القراءة
-- `_handleSaveAndLeave`: saveProgress + saveAndLeaveSession + stop hostServer / disconnect participantClient + cancel timer
-- `_handleEndReadingSession`: saveProgress + endReadingSession + broadcastSessionEnded + stop server + disconnect + optional stats dialog if statsEnabled
-- Auto-save: `_saveProgress()` called on every page change (previous/next/goToPage/onPageChanged), persists via reading_progress + updateSessionLastPage, survives app close (SQLite)
-- Timer: if timerEnabled, periodic 1s timer shows elapsed MM:SS in AppBar, stored in _elapsedSeconds
-- Stats: if statsEnabled, end shows dialog with pageOf and timer and timestamp
+- **الجلسات:** Save & Leave يحفظ التقدم والحالة `saved` دون End؛ End وحده يغيّرها إلى `ended` ويوقف TCP/UDP ويفصل الأعضاء. My Sessions يعرض النشطة/المحفوظة/المنتهية ويستأنف الجلسة نفسها من الصفحة المحلية؛ الإنهاء يمنع الاستئناف. عند التشغيل البارد تُحوَّل الجلسات التي تركها الإغلاق المفاجئ `active/paused/created` إلى `saved` قبل بناء الواجهات. Library Read Now يبقى قراءة محلية ويُنشئ سجل Solo جديدًا إذا كان السابق محفوظًا/منتهيًا؛ My Sessions → Resume يعيد **السجل نفسه**. حذف السجل محفوظ/منتهٍ فقط، ولا يزيل ملف الكتاب.
+- **Group/LAN:** يستأنف المنظم Host جديدًا على TCP 40404، مع UDP 40405 وعنوان LAN الحالي، مستخدمًا نفس رمز الجلسة والصفحة. يمكن الانضمام بالرمز عبر UDP discovery، وانتظار إعلان جديد قليلًا، أو إدخال IP:port يدويًا. My Sessions يبحث أيضًا عن Host جديد قبل طلب IP. تبقى `joinAck` و`stateSnapshot` وHost-authoritative page/status كما كانت؛ قطع الاتصال وحده لا ينهي الجلسة. يظهر تقدم ووقت كل جهاز في قائمة أعضاء الغرفة.
+- **المحتوى:** مستودع SQLite للملاحظات الخاصة/المشتركة، تثبيت الملاحظات، التظليل الملون بإحداثيات نسبية للصفحة، نقاش نصي/Emoji لكل صفحة، واستعادة العناصر المحلية بعد الاستئناف. داخل قارئ pdfx لوحة ثابتة الارتفاع بمساحتي ملاحظات/نقاش قابلتين للتمرير مع Scrollbar. تختار التظليل الشخصي/المشترك بالسحب فوق صفحة PDF؛ العناصر المشتركة تُرسل وتُعاد عبر TCP، والخاصة لا تُرسل. منطقة التظليل تعتمد أبعاد صفحة PDF في الوضع fit-to-page، وليس مساحة الشاشة كلها.
+- **الصوت والمشاركة:** Android `MediaRecorder`/`MediaPlayer` مع طلب `RECORD_AUDIO` وقت التسجيل، Start/Stop/Cancel والمدة والتشغيل؛ ملف M4A محلي، وبيانات وصفية في SQLite. صوت LAN مجزأ ومحكوم بالحجم ويُتحقق من SHA-256 قبل التخزين، ويعاد إرساله عند الاتصال. مشاركة رمز الغرفة عبر Android Share Sheet. مشاركة **ملف التطبيق المثبت فعليًا فقط** عبر ContentProvider للقراءة؛ يرفض التثبيت المجزأ أو الملف غير الموجود مع توجيه للحصول على APK موحد وموقع، ولا يصنع APK وهميًا.
+- **المكتبة:** أبقيت زر **إضافة ملف PDF** الظاهر أعلى الشاشة فقط؛ أزلت الأيقونة وFAB وزر الحالة الفارغة المكررة دون إزالة ملف الاختيار/الاستيراد أو زر PDF التجريبي المختلف.
+- **Phase 1–5:** لم أبدّل Flutter/Dart أو `pdfx: 2.8.0` أو مكتبة PDF أو قاعدة البيانات أو بنية LAN، ولم أضف Cloud/Phase 7 أو تطبيق iOS أصليًا.
 
-### 2. My Sessions Screen
-`lib/features/session_history/my_sessions_screen.dart`:
-- Third bottom nav tab in `lib/main.dart`: AppIcon.history label "جلساتي" / "My Sessions"
-- Stream `watchSavedSessions()` shows saved+ended ordered by updatedAt desc
-- Card key `session_card_{id}` shows:
-  - book title (from books table via bookRepo)
-  - current/last page: from reading_progress + sessions.last_page fallback, total from progress or book.pageCount, display "الصفحة 10 من 20" / "Page 10 of 20" key `page_display_{id}`
-  - last activity: relative time just now / {count} min ago / hours ago / days ago via _formatLastActivity, uses session.updatedAt
-  - status chip: saved blue "محفوظة" / "Saved" or ended grey "منتهي" / "Ended"
-  - group/solo badge: icon group/person + "جلسة جماعية" / "Group Session" vs "قراءة فردية" / "Solo Reading"
-  - session id small grey
-  - Actions: [حذف][استئناف] keys `delete_session_{id}` / `resume_session_{id}`, delete outlined red, resume blue if saved else disabled grey if ended
-  - If ended, footer "منتهية - غير قابلة للانضمام، يمكن عرض السجل فقط" / "Ended - not joinable, history viewable"
-- Empty state: AppIcon.history 72, "لا توجد جلسات محفوظة" / "No saved sessions" + hint
-- Delete confirmation `confirm_delete_dialog` title "حذف سجل الجلسة" / "Delete Session History" body "هل تريد حذف سجل هذه الجلسة؟" / "Do you want to delete this session history?" buttons إلغاء / حذف keys `cancel_delete_button` / `confirm_delete_button`, deletion removes session record/metadata/events only, keeps book file and library entry
-- Resume:
-  - Solo saved: mark active, navigate PdfReaderScreen book, sessionId, isHost true, restores saved page via reading_progress
-  - Group Host saved: mark active, navigate RoomDetailScreen which creates fresh LAN server with new IP/port (via LanHostServer start bind anyIPv4 + LanIpHelper.getLocalLanIPv4), do NOT reuse old TCP socket, do NOT assume old IP valid, uses new current LAN address, QR new
-  - Group Participant saved: open PdfReaderScreen as participant (fallback solo if host not available) – clear relationship old history vs resumed live to avoid duplication, does NOT duplicate history entry (same id reused, status set active)
-  - Ended: resume button disabled, not joinable as live room but history viewable
+## 2. Modified Files
 
-### 3. RoomsScreen Timer/Stats Flags
-`lib/features/room/rooms_screen.dart`:
-- Create room dialog now includes CheckboxListTile "تفعيل مؤقت القراءة" / "Enable Reading Timer" and "عرض إحصائية نهاية الجلسة" / "Show End Session Stats", saved via updateSessionFlags
-- Independent optional, if disabled do not display (checked in PdfReaderScreen)
+- `lib/main.dart`; `lib/core/di/injection.dart`; `lib/core/l10n/app_localizations.dart`.
+- `lib/data/database/migrations/schema_migrations.dart`; `lib/data/database/tables/notes_table.dart`; `lib/data/database/tables/messages_table.dart`.
+- `lib/data/repositories/session_repository.dart`; `lib/data/repositories/participant_reading_time_repository.dart`; **جديد:** `lib/data/repositories/session_content_repository.dart`؛ **جديد:** `lib/data/storage/session_voice_store.dart`.
+- `lib/features/lan/lan_discovery_service.dart`; `lan_host_server.dart`; `lan_participant_client.dart`; `lan_message.dart`; `lan_sync_coordinator.dart` (توجيه Save/End الصريح)؛ **جديد:** `session_content_sync.dart` (جميعها تحت `lib/features/lan/`).
+- `lib/features/reader/pdf_reader_screen.dart`; `pdf_page_view.dart`; `lib/features/room/local_room_service.dart`; `room_detail_screen.dart`; `rooms_screen.dart`; `lib/features/session_history/my_sessions_screen.dart`; `lib/features/library/pdf_library_screen.dart`.
+- **جديد:** `lib/features/session_content/app_sharing_service.dart`; `voice_audio_service.dart`; `session_content_panel.dart`.
+- `android/app/src/main/AndroidManifest.xml`; `android/app/src/main/kotlin/com/example/readmesh/MainActivity.kt`; **جديد:** `android/app/src/main/kotlin/com/example/readmesh/ReadMeshApkProvider.kt`.
+- `test/unit/phase5/library_import_and_sync_test.dart`; `test/unit/phase6/session_history_test.dart`؛ **جديد:** `test/unit/phase6/phase6_regression_test.dart`, `session_content_repository_test.dart`, `session_content_lan_test.dart`, `session_content_panel_test.dart`, `room_code_discovery_test.dart`, `app_sharing_service_test.dart`؛ وهذا التقرير.
 
-### 4. Main Shell
-`lib/main.dart`:
-- Pages: PdfLibraryScreen, RoomsScreen, MySessionsScreen
-- BottomNavigationBar 3 items: Library (book), Rooms (group), My Sessions (history)
+## 3. Database Changes
 
-### 5. Localization
-`lib/core/l10n/app_localizations.dart`:
-- Added en/ar keys: whatWouldYouDo, saveAndLeave, endReadingSession, mySessions, noSavedSessions, noSavedSessionsHint, pageXofY, lastReading, lastReadingPrefix, saved, savedStatus, confirmEndTitle, confirmEndBody, confirmDeleteTitle, confirmDeleteBody, deleteSession, resumeUpper, deleteHistory, sinceMinutes, sinceHours, sinceDays, justNow, timerEnabled, statsEnabled, enableTimerLabel, enableStatsLabel, continueReading, groupSession, soloSession, endedNotJoinable
-- Preserve Arabic default RTL, English toggle, existing colors, SVG AppIcon, Library/Rooms/Reader language
-- Semantic labels: حفظ ومغادرة / إنهاء جلسة القراءة / استئناف / حذف
+- قاعدة **Drift/SQLite نفسها**؛ الإصدار الحالي للمخطط `4`. تستبقي migration الإصدار `3` حقول الجلسة (`last_page`, `total_pages`, `last_activity_at`, `session_type`, `timer_enabled`, `stats_enabled`). أضاف الإصدار `4` إلى `notes`: `session_id` (nullable لحماية ملاحظات الكتب القديمة)، `note_kind`, `visibility`, `is_pinned`, `region_width`, `region_height`؛ وإلى `messages`: `page_number`, `voice_path`, `duration_ms`, `voice_sha256`, `voice_bytes`، مع فهارس session/page. الإحداثيات `position_x/position_y` كانت موجودة أصلًا.
+- تستعمل `reading_progress` تقدمًا منفصلًا لكل device/session؛ `participant_reading_time` وقتًا تراكميًا منفصلًا عن عرض Timer/Statistics، مع تحديثات محلية ذرية وقيمة Host LAN تصاعدية لا تتناقص. Notes/Messages/Time تُحذف بمفتاح session عند حذف التاريخ؛ Books/PDF لا تُحذف.
+- حاليًا تعتمد أعمدة المحتوى الجديدة استعلامات Drift الخام داخل `AppDatabase.writeTx` وmigration يفحص الأعمدة الموجودة؛ **لم يُعَد توليد `app_database.g.dart`** لأن Dart/Flutter/build_runner غير متاح. يجب تشغيل analyzer/tests والتحقق من ترقية قاعدة قديمة على جهاز قبل الاعتماد على الهجرة.
 
-## Lifecycle
-- active: live reading, LAN sync active
-- paused: host paused, banner, participants waiting
-- saved: Save and Leave – not permanently finished, saved locally with position/bookId/path/metadata/role/identity/state/timestamp, appears in My Sessions, resumable as fresh live LAN if group Host
-- ended: End Reading Session – disconnects participants, stops sync, marks ended/history not joinable, keeps PDF in Library, keeps session record in history unless deleted
-- deleted: history removed, book remains
-- saved != ended, ended != resumable as live room but history viewable
-- Group saved: preserve history/last page/host metadata, resume creates new live LAN, clear relationship old vs resumed to avoid duplication
+## 4. LAN Protocol Changes
 
-## Testing
+رسائل إضافية فقط عبر TCP الموجود: `contentUpsert` (ملاحظة/تظليل/نص/بيانات الصوت)، `voiceChunk` (M4A/base64 مجزأ مع فحص SHA-256)، `participantProgress`، `participantTime` (ثوانٍ تراكمية). يتأكد Host من هوية socket، يُعيد المحتوى المشترك عند join/reconnect، ولا يُرحِّل ملاحظات شخصية أو مسارات الملفات الخاصة. لم تتغير أسماء رسائل `join`, `joinAck`, `stateSnapshot`, `pageChanged`, `sessionStarted`, `sessionPaused`, `sessionResumed`, `sessionSaved`, `sessionEnded`, `leave`, `ping`, `pong`. لا منفذ جديد؛ TCP **40404** وUDP **40405**. الاختبارات الحقيقية للشبكة/الأجهزة لا تزال مطلوبة.
 
-### Automated Tests – 10 cases
-`test/unit/phase6/session_history_test.dart`:
-1. Save and Leave appears in My Sessions history – create book, session active, progress page 10, saveAndLeave, getSavedSessions contains saved
-2. Resume restores page and book – create saved session with progress 10/20, getProgress returns 10, book exists file exists
-3. Delete removes history only, book remains – create book+saved session, deleteSessionHistoryOnly, session null, book still exists, library contains
-4. End Reading Session disconnects participants – hostServer start loopback, participant connect, broadcastSessionEnded, endReadingSession, status ended, participant disconnect
-5. Ended not joinable, history viewable – create ended session, getSavedSessions contains, status ended, book exists
-6. Save/Leave != End – saved resumable to active, ended remains ended
-7. Resumed LAN fresh connection – first server port X, stop, saveAndLeave, second server new instance port Y, isRunning true, no duplicate history (1 entry)
-8. Auto-save reading position persists – loop pages 1..10 updateProgress+updateSessionLastPage, progress 10, latestBookProgress after reopen 10
-9. Lifecycle active/paused/saved/ended distinction – active->paused->saved->ended, saved!=ended
-10. Timer and stats flags independent optional – initial false/false, enable timer only true/false, enable stats only false/true, both true/true, both false/false via KVS fallback
+## 5. Storage
 
-**Test execution status:** BLOCKED in sandbox – flutter/dart binary not found (`which flutter` empty, `which dart` empty, /usr/local/bin only yarn). `flutter pub get`, `flutter analyze`, `flutter test` cannot run. Files compile syntactically (manual review), but cannot claim PASS. Need to run on local machine with Flutter 3.24.5 Dart 3.5.4: `flutter pub get && flutter analyze && flutter test test/unit/phase6/session_history_test.dart`
+| البيانات | الموضع |
+|---|---|
+| PDF | ملفات محلية في `getApplicationDocumentsDirectory()/books/` وفق `BookFileManager`؛ مراجع/تجزئة SHA-256 في SQLite `books`. |
+| Sessions, progress, reading time, notes, highlights, pins, discussion, Emoji, voice metadata | `getApplicationDocumentsDirectory()/readmesh.db`، ضمن الجداول الحالية. لا BLOB للصوت. |
+| Voice M4A | `getApplicationDocumentsDirectory()/readmesh_voice/<SHA-256(session-id)[:32]>/<voice-id>.m4a`، ونسخ LAN تستقر بعد فحص التجزئة؛ حذف التاريخ يزيل مجلد صوت الجلسة فقط. |
+| APK عند المشاركة | **`applicationInfo.sourceDir`** الفعلي عبر URI مؤقت read-only، وفقط عندما يكون APK مستقلًا وموجودًا؛ ليس ملفًا مرفقًا داخل المشروع. |
 
-### Real-Device Acceptance – 18 steps (requires user to run on 2 Android devices)
-1. Create session (solo or group) – Host creates room with book
-2. Read to page 10 – navigate 1→10, verify auto-save
-3. Save and Leave – back button → dialog ماذا تريد أن تفعل؟ → حفظ ومغادرة → leaves cleanly
-4. Close app – kill app
-5. Reopen later – launch app
-6. Open My Sessions – bottom nav جلساتي
-7. Confirm page 10 – card shows "الصفحة 10 من 20 آخر قراءة: منذ ..." / "Page 10 of 20 Last reading: ..."
-8. Resume PDF at page 10 – tap استئناف → PdfReaderScreen opens at page 10
-9. If group restart LAN host new IP/port – Host resume → RoomDetailScreen → new LAN IP:port displayed, QR new, not old socket
-10. Participant joins resumes – Participant enters new IP:port + code, joins, sync page 10
-11. Test End – Host in reader or room detail → back → إنهاء جلسة القراءة → confirmation "سيؤدي إنهاء..." → confirm
-12. Confirm disconnect – Participant shows disconnected, LAN peer count 0, status ended
-13. History – My Sessions shows ended status "منتهية" grey, not blue
-14. Not joinable – Participant tries join ended room code → Snackbar "لا يمكن الانضمام إلى غرفة منتهية. متاحة كسجل فقط." / "Cannot join an ended room. It is history only."
-15. Book remains Library – Library tab still shows PDF, readable offline
-16. Delete record disappears – My Sessions → حذف → confirmation "هل تريد حذف سجل هذه الجلسة؟" → حذف → card disappears
-17. Book remains after delete – Library still has book, file exists
-18. Continue Reading UX – Library shows Continue Reading? (optional) – book progress still 10
+## 6. Tests Passed
 
-**Real-device status:** NOT EXECUTED in sandbox – requires physical Android devices. User must run acceptance per above steps.
+- `git diff --check`: ناجح، لا أخطاء whitespace.
+- فحص **نحوي فقط** بـ tree-sitter لعدد **95 ملف Dart** في `lib/test/integration_test`: 0 أخطاء syntax عند آخر تشغيل. **لا يفحص الأنواع أو Flutter ولا ينفّذ اختبارًا واحدًا.**
+- **اختبارات Flutter المنفّذة والناجحة: لا يوجد** في بيئة Arena الحالية.
 
-## Files Changed
-- lib/data/database/tables/sessions_table.dart – added Phase 6 columns
-- lib/data/database/migrations/schema_migrations.dart – v3 migration + indexes
-- lib/data/repositories/session_repository.dart – Phase 6 methods
-- lib/features/reader/pdf_reader_screen.dart – leave dialog, save/leave vs end, timer/stats, auto-save
-- lib/features/session_history/my_sessions_screen.dart – new screen My Sessions
-- lib/features/room/rooms_screen.dart – timer/stats checkboxes in create dialog
-- lib/main.dart – third tab My Sessions
-- lib/core/l10n/app_localizations.dart – Phase 6 keys
-- test/unit/phase6/session_history_test.dart – 10 tests
-- Plus Phase 5 assets/icons/*, AppIcon, lan_ip_helper, language_service, etc. committed in same push (previously untracked)
+## 7. Tests Not Run
 
-## Remaining Issues / Next Steps
-- flutter analyze/test BLOCKED – run locally
-- Real-device 18-step acceptance NOT EXECUTED – requires user on 2 Android devices
-- g.dart not regenerated – works via raw SQL + defaults, but ideally run `dart run build_runner build --delete-conflicting-outputs` on machine with Flutter to regenerate app_database.g.dart with new columns
-- Participant resume for saved group session currently falls back to solo reading if host IP not provided – future: prompt for host IP or show QR join in My Sessions for group
-- Timer persistence across app close not yet implemented (elapsed resets on resume) – could store totalSeconds in participant_reading_time table
-- End stats currently simple dialog – could show detailed page_activity, participant count, duration
-- My Sessions does not yet show participant status/page, profile/name/avatar, QR join, group progress, Bookmarks, Page Notes, Text Messages, Share app – those are listed as "After core stable, also:" optional, not required for core Phase 6 but could be added
-- No duplicate history entry on resume – verified via test 7, but ensure UI does not create new session id on resume (reuses same id)
+- كُتبت/حُدثت اختبارات Phase 6 للوصول إلى **42 تعريف test/testWidgets** عبر ملفات Phase 6، منها SQLite file-backed/restart/history/private/shared/pin/highlight/voice/time، واسترجاع LAN TCP loopback لثلاثة أطراف، وUDP code discovery، وواجهة التمرير/Emoji والتسجيل بمسجل وهمي، ونص مشاركة الرمز. توجد كذلك اختبارات Phase 5 السابقة المعدّلة لتوقع زر PDF واحد. **كلها غير منفّذة**؛ وجودها ليس PASS.
+- المحاولات: `flutter --version`, `flutter pub get`, `flutter analyze`, `flutter test test/unit/phase6/`, `flutter build apk --debug` انتهت جميعها بكود **127: `flutter: command not found`**. لا Android SDK ولا جهاز/محاكي مثبت في بيئة التنفيذ. يجب أيضًا تشغيل `flutter test` كاملًا، اختبار migration من قاعدة قديمة، واختبارات Kotlin/Android على الجهاز، واختبار هاتفين LAN حقيقي.
 
-## STOP After Phase 6
-Phase 6 core implemented, pushed to arena/01a0bf89-readmwsh commit a356307. Do NOT start Phase 7 or online/cloud. Awaiting user real-device acceptance.
+## 8. Build
+
+**لا يوجد APK مبني أو مثبت أو مُشارك من هذه البيئة.** `build/app/outputs/flutter-apk/app-debug.apk` غير موجود. المطلوب على جهاز تطوير متوافق: Flutter **3.24.5** / Dart **3.5.4**، `flutter pub get && flutter analyze && flutter test && flutter build apk --debug`، ثم التأكد من وجود وحجم APK وتجربة تثبيته على جهاز Android آخر. لا يُعتَمد الزر الأصلي لمشاركة APK قبل تجريب تطبيق مُثبت فعليًا.
+
+## 9. Remaining Issues / خطوات القبول على الأجهزة
+
+1. **Blocked:** لم تُجرَ عملية analyze أو compile لـKotlin/Flutter، اختبارات الوحدة والتكامل، ترقية SQLite من قاعدة قديمة فعلًا، إنشاء/تثبيت APK، أو اختبار هاتفين. أي خطأ compilation/runtime محتمل حتى تنفيذها وإصلاحه.
+2. **تظليل pdfx:** الإحداثيات مضبوطة على صفحة PDF عند fit-to-page؛ التكبير/تحريك الصفحة (pinch/zoom) ليس مربوطًا بتحويل Overlay بعد التكبير، فيحتاج اختبارًا أو تحسينًا قبل اعتبار تطابق مناطق التظليل عبر جميع أوضاع العرض مكتملًا.
+3. **نقل PDF غير موجود في Phase 6:** الاستيراد المحلي للملف نفسه مطلوب على الهاتفين كما في بنية Phase 2–5؛ عند أول اتصال عن بُعد ومع وجود كتب مختلفة قد يختار placeholder أول كتاب محلي بدل مطابقة SHA-256 كتاب Host. ينبغي اختبار/معالجة اختيار الكتاب قبل إثبات سيناريو قارئ واحد متزامن.
+4. **وقت الإغلاق القسري:** تسجيل الوقت أثناء القراءة كل 15 ثانية وعند تعليق/مغادرة الشاشة؛ قتل العملية دون lifecycle قد يُفقد آخر ثوانٍ قليلة، لكن استئناف الجلسة والتقدم المُحفوظ والملفات مستقلون عن End.
+5. مشاركة APK مقصورة على تثبيت APK مستقل؛ Play split APK يتطلب ملف توزيع موحدًا وموقعًا من القناة الرسمية، لا يصلح إرسال `base.apk` وحده. توفر Quick Share/Bluetooth/WhatsApp/Telegram يعتمد على التطبيقات المستقبِلة ونوع الملف؛ لم يُختبر.
+
+**سيناريو الهاتفين المطلوب، ولم يُنفّذ هنا:** ثبّت **نفس APK** واستورد **نفس PDF** على A/B؛ على A أنشئ Group → افتح القارئ → اذهب للصفحة 10 → أضف Note مشتركة وثبّتها → تظليلًا مشتركًا → رسالة/Emoji → سجّل Voice وشغّله → Save & Leave. أغلق وافتح التطبيقين بعد يوم/أسبوع؛ من My Sessions يستأنف A **نفس** الغرفة والصفحة ويعرض Host IP الحالي/رمزها ويشارك الرمز. على B ادخل Rooms برمز الغرفة فقط، تحقّق من `joinAck`/snapshot والمحتوى المشترك على **الصفحة 10 وحدها** وأن ملاحظات A الخاصة لا تظهر؛ إذا حُجب UDP استخدم IP:port اليدوي. اقطع Wi‑Fi مؤقتًا ثم أعده لتختبر reconnect وتقدم/وقت B؛ أجرب Timer ON/Stats OFF والعكس، Pause/Resume؛ أنهِ من A وحده وتحقق من انقطاع B، منع join، بقاء PDF والتاريخ، ثم حذف تاريخ الجلسة دون إزالة الكتاب أو PDF. افحص مشاركة الـAPK وتثبيته على هاتف ثانٍ فعلًا وسجل النتائج قبل تغيير الحالة إلى COMPLETE.
+
+### 52 بند قبول: كلها غير متحقق منها عمليًا
+
+| # | بند الاختبار المطلوب | # | بند الاختبار المطلوب |
+|---:|---|---:|---|
+| 1 | Solo import/قراءة محلية | 2 | Group إنشاء واختيار PDF |
+| 3 | حفظ الصفحة 10 وإجمالي الصفحات | 4 | حفظ last_activity والتاريخ |
+| 5 | Save & Leave لا ينهي | 6 | إيقاف Host/اتصال LAN بأمان |
+| 7 | إغلاق التطبيق → saved عند العودة | 8 | My Sessions يعرض الحالة الصحيحة |
+| 9 | My Sessions العنوان واسم الكتاب | 10 | My Sessions Solo/Group والتاريخ |
+| 11 | استئناف الصفحة نفسها بعد أسبوع | 12 | Library يقرأ PDF مستقلًا عن Resume |
+| 13 | End فقط ينهي الجلسة | 14 | End يفصل الجميع ويوقف discovery |
+| 15 | End يمنع إعادة join | 16 | End يحتفظ بالسجل وPDF |
+| 17 | Resume Group بنفس session ID | 18 | Host جديد/IP حالي/40404 |
+| 19 | إعلان UDP 40405 | 20 | انضمام بكود فقط |
+| 21 | fallback عنوان IP يدوي | 22 | joinAck/stateSnapshot أصليان |
+| 23 | حفظ دور Host/Participant | 24 | reconnect أثناء LAN وانقطاع عابر |
+| 25 | حفظ تقدم كل جهاز مستقلاً | 26 | سياسة Host authoritative للصفحة |
+| 27 | قراءة وقت كل جهاز مستقلاً | 28 | Timer ON/Statistics OFF |
+| 29 | Timer OFF/Statistics ON | 30 | استعادة flags بعد الاستئناف |
+| 31 | ملاحظة صفحة صحيحة | 32 | Personal لا تظهر للآخرين |
+| 33 | Shared ترحل عبر LAN | 34 | Pin يظهر لدى المجموعة |
+| 35 | Pin لا يظهر بالصفحات الأخرى | 36 | استعادة Notes/Pin بعد حفظ |
+| 37 | Highlight يُحفظ بإحداثيات ولون | 38 | Shared Highlight يظهر بصفحة محددة |
+| 39 | استعادة Highlights بعد أسبوع | 40 | Discussion نصي لصفحة |
+| 41 | Emoji يبقى داخل الرسالة | 42 | نقاش LAN وscrollbar كثيف |
+| 43 | تسجيل صوت حقيقي وإذن MIC | 44 | إظهار المدة/إيقاف التسجيل |
+| 45 | إلغاء التسجيل والتنظيف | 46 | تشغيل M4A محفوظ |
+| 47 | نقل صوت مُتحقَّق SHA-256 | 48 | استعادة/إعادة إرسال الصوت |
+| 49 | Share Sheet لرمز الجلسة | 50 | زر إضافة PDF واحد والمستورد يعمل |
+| 51 | حذف سجل فقط والكتاب/الملف باقٍ | 52 | بناء/تثبيت/مشاركة APK حقيقي بين هاتفين |
+
+**حالة البنود 1–52: NOT RUN / BLOCKED** إلى حين تنفيذ Flutter والاختبارات العملية حسب البند. الاختبارات المكتوبة تحقق أجزاء من المنطق برمجيًا عند توفر الأداة؛ لا تحول أي بند إلى PASS بذاتها.
+
+## 10. Phase 6 Status
+
+# NOT COMPLETE
+
+توقف العمل عند Phase 6 فقط؛ لا Phase 7 ولا Online Rooms ولا Cloud/Supabase/PostgreSQL. عند توفر Flutter/Android SDK والأجهزة، نفّذ الفحوص، أصلح الأخطاء الفعلية، ثم أعد تقريرًا قائمًا على النتائج لا على وجود الكود.

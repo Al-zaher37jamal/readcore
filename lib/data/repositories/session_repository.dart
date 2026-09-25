@@ -15,6 +15,8 @@ abstract class SessionRepository {
   Stream<List<Session>> watchAllSessions();
   Stream<Session?> watchSessionById(String id);
   Future<bool> updateSessionStatus(String id, String status);
+  /// Called once on cold launch: a prior process is no longer hosting LAN.
+  Future<int> recoverInterruptedSessions();
   Future<bool> deleteSession(String id);
 
   // Phase 6: Session History and Resumable Local Reading
@@ -54,6 +56,10 @@ class SessionRepositoryImpl implements SessionRepository {
 
     return _db.writeTx(() async {
       await _db.into(_db.sessionsTable).insert(companion);
+      await _db.customStatement(
+        'UPDATE sessions SET session_type = ? WHERE id = ?',
+        [id.startsWith('solo_') ? 'solo' : 'group', id],
+      );
       return (await (_db.select(_db.sessionsTable)..where((t) => t.id.equals(id))).getSingle());
     });
   }
@@ -84,17 +90,41 @@ class SessionRepositoryImpl implements SessionRepository {
 
   @override
   Future<bool> updateSessionStatus(String id, String status) {
+    // Lifecycle terminal transitions have their own methods. In particular,
+    // a generic LAN/status update must never turn Save & Leave into End.
+    if (!const {'created', 'active', 'paused'}.contains(status)) return Future.value(false);
     return _db.writeTx(() async {
-      final session = await getSessionById(id);
-      if (session == null) return false;
-      return await _db.update(_db.sessionsTable).replace(
-            session.copyWith(
-              status: status,
-              updatedAt: DateTime.now().toUtc(),
-            ),
-          );
+      final now = DateTime.now().toUtc().millisecondsSinceEpoch ~/ 1000;
+      final changed = await _db.customUpdate(
+        "UPDATE sessions SET status = ?, updated_at = ? WHERE id = ? AND status != 'ended'",
+        variables: [Variable.withString(status), Variable.withInt(now),
+                    Variable.withString(id)],
+        updates: {_db.sessionsTable},
+      );
+      return changed > 0;
     });
   }
+
+  @override
+  Future<int> recoverInterruptedSessions() => _db.writeTx(() async {
+    // Called only during cold startup, before any Host is created. A process
+    // shutdown does not deliver a guaranteed Flutter lifecycle callback; the
+    // stale live status must become Saved rather than being misread as Ended.
+    // Preserve the actual last activity time instead of stamping launch time.
+    final count = await _db.customUpdate('''
+UPDATE sessions SET status = 'saved',
+  last_activity_at = COALESCE(last_activity_at, updated_at)
+WHERE status IN ('active', 'paused', 'created')
+''', updates: {_db.sessionsTable});
+    if (count > 0) {
+      await _db.customUpdate('''
+UPDATE session_members SET status = 'disconnected'
+WHERE status = 'active' AND session_id IN
+  (SELECT id FROM sessions WHERE status = 'saved')
+''', updates: {_db.sessionMembersTable});
+    }
+    return count;
+  });
 
   @override
   Future<bool> deleteSession(String id) {
@@ -107,16 +137,11 @@ class SessionRepositoryImpl implements SessionRepository {
   // Phase 6 implementation
 
   @override
-  Future<List<Session>> getSavedSessions() async {
-    // Saved = status in ('saved', 'ended', 'active', 'paused') but we want history: saved and ended are primary
-    // For My Sessions, show saved and ended, ordered by updatedAt desc (last activity)
-    final query = _db.select(_db.sessionsTable)
-      ..where((t) => t.status.equals('saved') | t.status.equals('ended') | t.status.equals('active') | t.status.equals('paused') | t.status.equals('created'))
-      ..orderBy([(t) => OrderingTerm.desc(t.updatedAt)]);
-    final all = await query.get();
-    // Filter out solo_ prefix? We include all, but rooms_screen filters solo_ out. For My Sessions, include solo and group saved.
-    return all.where((s) => s.status == 'saved' || s.status == 'ended').toList()
-      ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+  Future<List<Session>> getSavedSessions() {
+    return (_db.select(_db.sessionsTable)
+          ..where((t) => t.status.isIn(['saved', 'ended']))
+          ..orderBy([(t) => OrderingTerm.desc(t.updatedAt)]))
+        .get();
   }
 
   @override
@@ -129,99 +154,122 @@ class SessionRepositoryImpl implements SessionRepository {
   }
 
   @override
-  Future<bool> saveAndLeaveSession(String id, {int? lastPage, int? totalPages}) async {
+  Future<bool> saveAndLeaveSession(String id, {int? lastPage, int? totalPages}) {
     return _db.writeTx(() async {
-      final session = await getSessionById(id);
-      if (session == null) return false;
-      // Update status to saved, updatedAt = now, and try to update new columns via raw SQL if they exist
-      final now = DateTime.now().toUtc();
-      await _db.customStatement(
-        'UPDATE sessions SET status = ?, updated_at = ? WHERE id = ?',
-        [ 'saved', now.millisecondsSinceEpoch, id ],
+      // One guarded SQLite write makes status AND page/timestamps durable before
+      // the UI may pop. An already-ended room can never be resurrected by Save.
+      // Do not replace a stale Drift Session: the generated class may omit
+      // migration columns (or overwrite them if regenerated later).
+      final now = DateTime.now().toUtc().millisecondsSinceEpoch ~/ 1000;
+      final pageSql = lastPage == null
+          ? '' : ', last_page = ?, total_pages = ?';
+      final variables = <Variable>[
+        Variable.withInt(now), Variable.withInt(now),
+        if (lastPage != null) ...[
+          Variable.withInt(lastPage), Variable.withInt(totalPages ?? lastPage),
+        ],
+        Variable.withString(id),
+      ];
+      final changed = await _db.customUpdate(
+        "UPDATE sessions SET status = 'saved', last_activity_at = ?, updated_at = ?"
+        "$pageSql WHERE id = ? AND status != 'ended'",
+        variables: variables, updates: {_db.sessionsTable},
       );
-      // If new columns exist, update them
-      if (lastPage != null) {
-        try {
-          await _db.customStatement('UPDATE sessions SET last_page = ?, total_pages = ?, last_activity_at = ? WHERE id = ?', [lastPage, totalPages ?? lastPage, now.millisecondsSinceEpoch, id]);
-        } catch (_) {}
-      } else {
-        try {
-          await _db.customStatement('UPDATE sessions SET last_activity_at = ? WHERE id = ?', [now.millisecondsSinceEpoch, id]);
-        } catch (_) {}
-      }
-      // Also update via Drift replace for updatedAt
-      final updated = await getSessionById(id);
-      if (updated != null) {
-        await _db.update(_db.sessionsTable).replace(updated.copyWith(status: 'saved', updatedAt: now));
-      }
+      return changed > 0;
+    });
+  }
+
+  @override
+  Future<bool> endReadingSession(String id) {
+    return _db.writeTx(() async {
+      final now = DateTime.now().toUtc();
+      final timestamp = now.millisecondsSinceEpoch ~/ 1000;
+      // Only an explicit End (or an authoritative Host end received by a
+      // participant) writes 'ended'. Save and socket shutdown never do.
+      final changed = await _db.customUpdate(
+        "UPDATE sessions SET status = 'ended', last_activity_at = ?, "
+        "updated_at = ? WHERE id = ? AND status != 'ended'",
+        variables: [Variable.withInt(timestamp), Variable.withInt(timestamp),
+                    Variable.withString(id)],
+        updates: {_db.sessionsTable},
+      );
+      if (changed == 0) return false;
+      await (_db.update(_db.sessionMembersTable)
+            ..where((m) => m.sessionId.equals(id) &
+                m.role.equals('participant') & m.status.equals('active')))
+          .write(SessionMembersTableCompanion(
+            status: const Value('left'),
+            lastSeenAt: Value(now),
+          ));
       return true;
     });
   }
 
   @override
-  Future<bool> endReadingSession(String id) async {
+  Future<bool> updateSessionLastPage(String id, int currentPage, int totalPages) {
+    return _db.writeTx(() async {
+      final timestamp = DateTime.now().toUtc().millisecondsSinceEpoch ~/ 1000;
+      final count = await _db.customUpdate(
+        'UPDATE sessions SET last_page = ?, total_pages = ?, last_activity_at = ?, updated_at = ? '
+        "WHERE id = ? AND status IN ('created', 'active', 'paused')",
+        variables: [
+          Variable.withInt(currentPage),
+          Variable.withInt(totalPages),
+          Variable.withInt(timestamp),
+          Variable.withInt(timestamp),
+          Variable.withString(id),
+        ],
+        updates: {_db.sessionsTable},
+      );
+      return count > 0;
+    });
+  }
+
+  @override
+  Future<bool> deleteSessionHistoryOnly(String id) {
+    // Removing a session cascades to its progress, members and events, never to books.
     return _db.writeTx(() async {
       final session = await getSessionById(id);
-      if (session == null) return false;
-      final now = DateTime.now().toUtc();
-      await _db.customStatement(
-        'UPDATE sessions SET status = ?, updated_at = ? WHERE id = ?',
-        ['ended', now.millisecondsSinceEpoch, id],
-      );
-      try {
-        await _db.customStatement('UPDATE sessions SET last_activity_at = ? WHERE id = ?', [now.millisecondsSinceEpoch, id]);
-      } catch (_) {}
-      final updated = await getSessionById(id);
-      if (updated != null) {
-        await _db.update(_db.sessionsTable).replace(updated.copyWith(status: 'ended', updatedAt: now));
-      }
+      if (session == null ||
+          (session.status != 'saved' && session.status != 'ended')) return false;
+      final count = await (_db.delete(_db.sessionsTable)..where((t) => t.id.equals(id))).go();
+      if (count == 0) return false;
+      await (_db.delete(_db.kvsTable)
+            ..where((t) => t.key.isIn(['session_${id}_timer', 'session_${id}_stats'])))
+          .go();
       return true;
     });
   }
 
   @override
-  Future<bool> updateSessionLastPage(String id, int currentPage, int totalPages) async {
-    try {
+  Future<bool> updateSessionFlags(String id, {bool? timerEnabled, bool? statsEnabled}) {
+    return _db.writeTx(() async {
+      if (await getSessionById(id) == null) return false;
       final now = DateTime.now().toUtc();
-      await _db.customStatement(
-        'UPDATE sessions SET last_page = ?, total_pages = ?, last_activity_at = ?, updated_at = ? WHERE id = ?',
-        [currentPage, totalPages, now.millisecondsSinceEpoch, now.millisecondsSinceEpoch, id],
-      );
-    } catch (_) {
-      // If columns don't exist, just update updatedAt via Drift
-      final session = await getSessionById(id);
-      if (session != null) {
-        await _db.update(_db.sessionsTable).replace(session.copyWith(updatedAt: DateTime.now().toUtc()));
-      }
-    }
-    return true;
-  }
-
-  @override
-  Future<bool> deleteSessionHistoryOnly(String id) async {
-    // Deletes session record, metadata, events only, keeps book file and library entry
-    // ON DELETE CASCADE will remove members, events, progress, etc., but not books
-    return deleteSession(id);
-  }
-
-  @override
-  Future<bool> updateSessionFlags(String id, {bool? timerEnabled, bool? statsEnabled}) async {
-    try {
       if (timerEnabled != null) {
-        await _db.customStatement('UPDATE sessions SET timer_enabled = ? WHERE id = ?', [timerEnabled ? 1 : 0, id]);
+        await _db.customStatement(
+          'UPDATE sessions SET timer_enabled = ? WHERE id = ?',
+          [timerEnabled ? 1 : 0, id],
+        );
+        await _db.into(_db.kvsTable).insertOnConflictUpdate(KvsTableCompanion.insert(
+              key: 'session_${id}_timer',
+              value: timerEnabled ? '1' : '0',
+              updatedAt: now,
+            ));
       }
       if (statsEnabled != null) {
-        await _db.customStatement('UPDATE sessions SET stats_enabled = ? WHERE id = ?', [statsEnabled ? 1 : 0, id]);
+        await _db.customStatement(
+          'UPDATE sessions SET stats_enabled = ? WHERE id = ?',
+          [statsEnabled ? 1 : 0, id],
+        );
+        await _db.into(_db.kvsTable).insertOnConflictUpdate(KvsTableCompanion.insert(
+              key: 'session_${id}_stats',
+              value: statsEnabled ? '1' : '0',
+              updatedAt: now,
+            ));
       }
-      // Also store in KVS as fallback for when columns don't exist
-      if (timerEnabled != null) {
-        await _db.customStatement("INSERT OR REPLACE INTO kvs (key, value, updated_at) VALUES (?, ?, ?)", ['session_${id}_timer', timerEnabled ? '1' : '0', DateTime.now().toUtc().millisecondsSinceEpoch]);
-      }
-      if (statsEnabled != null) {
-        await _db.customStatement("INSERT OR REPLACE INTO kvs (key, value, updated_at) VALUES (?, ?, ?)", ['session_${id}_stats', statsEnabled ? '1' : '0', DateTime.now().toUtc().millisecondsSinceEpoch]);
-      }
-    } catch (_) {}
-    return true;
+      return true;
+    });
   }
 
   @override

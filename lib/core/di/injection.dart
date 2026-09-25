@@ -1,7 +1,9 @@
 import 'dart:io';
 import 'package:get_it/get_it.dart';
 import 'package:readmesh/data/database/app_database.dart';
+import 'package:readmesh/features/audio_messages/data/local_audio_service.dart';
 import 'package:readmesh/data/database/single_writer_lock.dart';
+import 'package:readmesh/data/repositories/audio_message_repository.dart';
 import 'package:readmesh/data/repositories/book_repository.dart';
 import 'package:readmesh/data/repositories/device_profile_repository.dart';
 import 'package:readmesh/data/repositories/kvs_repository.dart';
@@ -14,6 +16,8 @@ import 'package:readmesh/data/repositories/reading_progress_repository.dart';
 import 'package:readmesh/data/repositories/session_event_repository.dart';
 import 'package:readmesh/data/repositories/session_member_repository.dart';
 import 'package:readmesh/data/repositories/session_repository.dart';
+import 'package:readmesh/data/repositories/session_content_repository.dart';
+import 'package:readmesh/data/storage/session_voice_store.dart';
 import 'package:readmesh/data/storage/book_file_manager.dart';
 import 'package:readmesh/data/storage/disk_space_checker.dart';
 import 'package:readmesh/data/storage/orphan_reconciler.dart';
@@ -55,6 +59,10 @@ Future<void> setupLocator({
   final fileManager = BookFileManager(customStorageDir);
   await fileManager.initialize();
   getIt.registerSingleton<BookFileManager>(fileManager);
+  getIt.registerSingleton<SessionVoiceStore>(SessionVoiceStore(fileManager.rootDir));
+  if (AndroidLocalAudioService.isAvailable) {
+    getIt.registerSingleton<LocalAudioService>(AndroidLocalAudioService());
+  }
 
   final diskSpaceChecker = customDiskSpaceChecker ?? const SystemDiskSpaceChecker();
   getIt.registerSingleton<DiskSpaceChecker>(diskSpaceChecker);
@@ -73,12 +81,15 @@ Future<void> setupLocator({
   final participantReadingTimeRepo = ParticipantReadingTimeRepositoryImpl(database);
   final pageActivityRepo = PageActivityRepositoryImpl(database);
   final messageRepo = MessageRepositoryImpl(database);
+  final audioMessageRepo = AudioMessageRepositoryImpl(
+      database, getIt<SessionVoiceStore>());
   final noteRepo = NoteRepositoryImpl(database);
   final kvsRepo = KvsRepositoryImpl(database);
 
   getIt.registerSingleton<BookRepository>(bookRepo);
   getIt.registerSingleton<DeviceProfileRepository>(deviceProfileRepo);
   getIt.registerSingleton<SessionRepository>(sessionRepo);
+  getIt.registerSingleton<SessionContentRepository>(SessionContentRepository(database));
   getIt.registerSingleton<SessionMemberRepository>(sessionMemberRepo);
   getIt.registerSingleton<SessionEventRepository>(sessionEventRepo);
   getIt.registerSingleton<OutboxRepository>(outboxRepo);
@@ -86,6 +97,7 @@ Future<void> setupLocator({
   getIt.registerSingleton<ParticipantReadingTimeRepository>(participantReadingTimeRepo);
   getIt.registerSingleton<PageActivityRepository>(pageActivityRepo);
   getIt.registerSingleton<MessageRepository>(messageRepo);
+  getIt.registerSingleton<AudioMessageRepository>(audioMessageRepo);
   getIt.registerSingleton<NoteRepository>(noteRepo);
   getIt.registerSingleton<KvsRepository>(kvsRepo);
 
@@ -132,6 +144,15 @@ Future<void> setupLocator({
   final languageService = LanguageService(kvsRepo);
   await languageService.init();
   getIt.registerSingleton<LanguageService>(languageService);
+
+  // Before opening a Reader, remove only Phase 7 recording drafts and audio
+  // files left unreferenced by an interrupted SQLite commit. Never touch
+  // Phase 6's earlier voice/Notes files or any committed audio message.
+  try {
+    await audioMessageRepo.pruneUnreferencedFiles();
+  } on FileSystemException {
+    // Storage may be temporarily unavailable; the next launch can retry.
+  }
 }
 
 /// Disposes and clears all registered services from locator.

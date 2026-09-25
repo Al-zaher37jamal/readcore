@@ -6,6 +6,12 @@ import 'package:readmesh/core/di/injection.dart';
 import 'package:readmesh/core/l10n/app_localizations.dart';
 import 'package:readmesh/data/database/app_database.dart';
 import 'package:readmesh/data/repositories/book_repository.dart';
+import 'package:readmesh/data/repositories/reading_progress_repository.dart';
+import 'package:readmesh/data/repositories/participant_reading_time_repository.dart';
+import 'package:readmesh/data/repositories/session_content_repository.dart';
+import 'package:readmesh/data/storage/session_voice_store.dart';
+import 'package:readmesh/features/lan/session_content_sync.dart';
+import 'package:readmesh/features/session_content/app_sharing_service.dart';
 import 'package:readmesh/features/lan/lan_connection_state.dart';
 import 'package:readmesh/features/lan/lan_discovery_service.dart';
 import 'package:readmesh/features/lan/lan_host_server.dart';
@@ -22,24 +28,35 @@ class RoomDetailScreen extends StatefulWidget {
   final String sessionId;
   final String? hostAddress;
   final int? port;
+  /// Only My Sessions -> Resume may restart this previously saved Host room.
+  final bool resumeSavedSession;
   final LocalRoomService? roomService;
   final BookRepository? bookRepository;
+  final ReadingProgressRepository? progressRepository;
+  final ParticipantReadingTimeRepository? readingTimeRepository;
   final DeviceService? deviceService;
   final LanHostServer? hostServer;
   final LanParticipantClient? participantClient;
   final LanDiscoveryService? discoveryService;
+  final SessionContentRepository? contentRepository;
+  final SessionVoiceStore? voiceStore;
 
   const RoomDetailScreen({
     super.key,
     required this.sessionId,
     this.hostAddress,
     this.port,
+    this.resumeSavedSession = false,
     this.roomService,
     this.bookRepository,
+    this.progressRepository,
+    this.readingTimeRepository,
     this.deviceService,
     this.hostServer,
     this.participantClient,
     this.discoveryService,
+    this.contentRepository,
+    this.voiceStore,
   });
 
   @override
@@ -49,6 +66,8 @@ class RoomDetailScreen extends StatefulWidget {
 class _RoomDetailScreenState extends State<RoomDetailScreen> {
   late final LocalRoomService _roomService;
   late final BookRepository _bookRepo;
+  ReadingProgressRepository? _progressRepo;
+  ParticipantReadingTimeRepository? _readingTimeRepo;
   late final DeviceService _deviceService;
   late final LanDiscoveryService _discoveryService;
   late final Stream<Session?> _sessionStream;
@@ -57,10 +76,13 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
 
   LanHostServer? _hostServer;
   LanParticipantClient? _participantClient;
+  SessionContentSync? _contentSync;
   StreamSubscription<LanConnectionState>? _participantConnSub;
   StreamSubscription<List<LanConnectedParticipant>>? _hostParticipantsSub;
-  StreamSubscription<List<SessionMember>>? _membersCountSub;
   StreamSubscription<String>? _participantStatusSub;
+  bool _exitApproved = false;
+  bool _closingRoom = false;
+  bool _exitDialogOpen = false;
 
   LanConnectionState _participantState = LanConnectionState.disconnected;
   String _hostDisplayIp = ''; // Fixed: no default 127.0.0.1, show loading then real IP
@@ -73,6 +95,12 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
     super.initState();
     _roomService = widget.roomService ?? getIt<LocalRoomService>();
     _bookRepo = widget.bookRepository ?? getIt<BookRepository>();
+    _progressRepo = widget.progressRepository ??
+        (getIt.isRegistered<ReadingProgressRepository>()
+            ? getIt<ReadingProgressRepository>() : null);
+    _readingTimeRepo = widget.readingTimeRepository ??
+        (getIt.isRegistered<ParticipantReadingTimeRepository>()
+            ? getIt<ParticipantReadingTimeRepository>() : null);
     _deviceService = widget.deviceService ?? getIt<DeviceService>();
     _discoveryService = widget.discoveryService ??
         (getIt.isRegistered<LanDiscoveryService>() ? getIt<LanDiscoveryService>() : LanDiscoveryService());
@@ -89,26 +117,8 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
       _initLan();
     }
 
-    // Listen to members to compute connected count consistently (active participants excluding host)
-    _membersCountSub = _membersStream.listen((members) {
-      if (!mounted) return;
-      final activeParticipants = members.where((m) => m.role != 'host' && m.status == 'active').length;
-      // For Host, LAN count should match active participants; also consider LAN sockets if more accurate
-      // We use max of active participants and LAN socket count for safety, but ensure 0→0,1→1
-      final isHost = _currentProfile != null &&
-          members.any((m) => m.deviceId == _currentProfile!.id && m.role == 'host');
-      if (isHost) {
-        // If LAN sockets exist, use them; otherwise use active count to stay consistent
-        final lanCount = _hostServer?.connectedClientCount ?? _lanConnectedCount;
-        // Prefer active count to avoid 0 connected vs active mismatch
-        final consistentCount = activeParticipants;
-        if (mounted) {
-          setState(() {
-            _lanConnectedCount = consistentCount;
-          });
-        }
-      }
-    });
+    // The displayed connected count comes from live TCP sockets, not stale
+    // session_members rows (which are local to each phone).
   }
 
   Future<void> _loadProfile() async {
@@ -124,143 +134,172 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
   Future<void> _initLan() async {
     if (_currentProfile == null) return;
     final session = await _roomService.watchRoom(widget.sessionId).first;
-    if (session == null) return;
-
+    if (!mounted || session == null || session.status == 'ended') return;
     final isHost = session.hostDeviceId == _currentProfile!.id;
 
     if (isHost) {
-      if (_hostServer == null && widget.hostServer == null) {
-        _hostServer = LanHostServer(
-          sessionId: widget.sessionId,
-          hostDeviceId: _currentProfile!.id,
-          hostDisplayName: _currentProfile!.displayName,
-          requestedPort: widget.port ?? 40404,
-        );
-        try {
-          await _hostServer!.start(); // Binds anyIPv4, gets real LAN IP via LanIpHelper
-          if (mounted) {
-            setState(() {
-              _hostDisplayIp = _hostServer!.localIp;
-              _hostPort = _hostServer!.port;
-            });
-          }
-
-          // Start lightweight UDP beacon with real IP
-          _discoveryService.startBeacon(
+      final wasSaved = session.status == 'saved';
+      // Opening saved history is not itself Resume. Only My Sessions may
+      // restart this same room; do not mark it active until TCP has bound.
+      if (wasSaved && !widget.resumeSavedSession) return;
+      var activatedSavedSession = false;
+      try {
+        if (_hostServer == null) {
+          final book = await _bookRepo.getBookById(session.bookId);
+          final progress = await _progressRepo?.getProgress(session.id, _currentProfile!.id);
+          if (!mounted) return;
+          final pages = book?.pageCount ?? progress?.totalPages ?? 1;
+          final total = pages > 0 ? pages : 1;
+          _hostServer = LanHostServer(
             sessionId: widget.sessionId,
-            title: session.title,
-            hostIp: _hostDisplayIp,
-            port: _hostPort,
+            hostDeviceId: _currentProfile!.id,
+            hostDisplayName: _currentProfile!.displayName,
+            initialPage: (progress?.currentPage ?? 1).clamp(1, total),
+            totalPages: total,
+            // The fresh socket can accept joins only after SQLite is active;
+            // the beacon is published below, after the DB transition.
+            sessionStatus: wasSaved ? 'active' : session.status,
+            requestedPort: widget.port ?? 40404,
           );
-        } catch (_) {
-          // Fallback to helper directly if start fails
-          final realIp = await LanIpHelper.getLocalLanIPv4();
-          if (mounted) {
-            setState(() {
-              _hostDisplayIp = realIp;
-            });
+        }
+        if (!_hostServer!.isRunning) {
+          await _hostServer!.start(); // TCP 40404, bind all LAN interfaces
+        }
+        if (!mounted) throw StateError('Room closed during resume.');
+        if (wasSaved) {
+          if (!await _roomService.resumeSession(widget.sessionId)) {
+            throw StateError('Saved room could not be resumed.');
           }
+          activatedSavedSession = true;
         }
-      } else if (_hostServer != null) {
-        if (mounted) {
-          setState(() {
-            _hostDisplayIp = _hostServer!.localIp;
-            _hostPort = _hostServer!.port;
-          });
-        }
-        // Ensure IP is not loopback if possible
-        if (_hostDisplayIp == '127.0.0.1' || _hostDisplayIp.startsWith('127.')) {
-          final realIp = await LanIpHelper.getLocalLanIPv4();
-          if (mounted && realIp != '127.0.0.1') {
-            setState(() {
-              _hostDisplayIp = realIp;
-            });
+        // A recovered Host/member becomes active under its existing identity.
+        await _roomService.joinRoom(sessionCode: widget.sessionId);
+        if (!mounted) throw StateError('Room closed during resume.');
+        await _attachContentSync(session, isHost: true);
+        if (!mounted) throw StateError('Room closed during resume.');
+      } catch (e) {
+        // Never advertise a ghost active room when TCP or reactivation fails.
+        Object? rollbackError;
+        try {
+          if (activatedSavedSession &&
+              !await _roomService.saveAndLeaveSession(widget.sessionId)) {
+            throw StateError('Unable to restore saved room after failed resume.');
           }
+        } catch (error) {
+          rollbackError = error;
+        } finally {
+          await _hostServer?.stop();
+          if (widget.hostServer == null) _hostServer?.dispose();
+          _hostServer = null;
         }
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(rollbackError == null
+              ? '$e' : '$e; rollback failed: $rollbackError'),
+              backgroundColor: Colors.red),
+        );
+        return;
       }
-
-      _hostParticipantsSub = _hostServer?.participantsStream.listen((list) {
-        if (mounted) {
-          // Update LAN count from sockets, but also sync with DB active count for consistency
-          // We keep socket count but UI will also be updated via members subscription
-          setState(() {
-            // For consistency, we will use list.length but members subscription overrides to active count
-            // To avoid mismatch, we set to list.length here and members subscription will correct if needed
-            _lanConnectedCount = list.length;
-          });
-        }
+      setState(() {
+        _hostDisplayIp = _hostServer!.localIp;
+        _hostPort = _hostServer!.port;
+        _lanConnectedCount = _hostServer!.connectedClientCount;
+      });
+      if (_hostServer!.isRunning && !LanIpHelper.isLoopback(_hostDisplayIp)) {
+        _discoveryService.startBeacon(
+          sessionId: widget.sessionId,
+          title: session.title,
+          hostIp: _hostDisplayIp,
+          port: _hostPort,
+        ); // UDP 40405; manual IP remains available when UDP is blocked.
+      }
+      _hostParticipantsSub = _hostServer!.participantsStream.listen((list) {
+        if (mounted) setState(() => _lanConnectedCount = list.length);
       });
     } else {
-      // Participant mode
-      if (widget.hostAddress != null && _participantClient == null) {
-        _participantClient = LanParticipantClient(
-          sessionId: widget.sessionId,
-          deviceId: _currentProfile!.id,
-          displayName: _currentProfile!.displayName,
-        );
-        _participantConnSub = _participantClient!.stateStream.listen((state) {
-          if (mounted) {
-            setState(() {
-              _participantState = state;
-            });
-          }
-        });
-        _participantStatusSub = _participantClient!.statusStream.listen((status) async {
-          if (mounted) {
-            setState(() {
-              _sessionStatusForParticipant = status;
-            });
-          }
-          if (status == 'ended') {
-            // When Host ends, update local member status to left, disconnect, remove connected state
-            try {
-              await _roomService.leaveRoom(widget.sessionId);
-            } catch (_) {}
-            if (mounted) {
-              setState(() {
-                _participantState = LanConnectionState.disconnected;
-              });
-            }
-            await _participantClient?.disconnect();
-          }
-        });
+      if (widget.hostAddress == null && _participantClient == null) return;
+      _participantClient ??= LanParticipantClient(
+        sessionId: widget.sessionId,
+        deviceId: _currentProfile!.id,
+        displayName: _currentProfile!.displayName,
+      );
+      final client = _participantClient!;
+      _participantConnSub = client.stateStream.listen((state) {
+        if (mounted) setState(() => _participantState = state);
+      });
+      _participantStatusSub = client.statusStream.listen(_handleParticipantStatus);
+      await _attachContentSync(session, isHost: false);
+      if (!mounted) return;
+      if (client.hasSnapshot) _handleParticipantStatus(client.sessionStatus);
+      if (widget.hostAddress != null && !client.isConnected) {
         try {
-          await _participantClient!.connect(
+          await client.connect(
             hostAddress: widget.hostAddress!,
             port: widget.port ?? 40404,
           );
-        } catch (_) {
+        } catch (e) {
           if (mounted) {
-            setState(() {
-              _participantState = LanConnectionState.disconnected;
-            });
+            setState(() => _participantState = LanConnectionState.disconnected);
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+              content: Text('${AppLocalizations.of(context).joinFailed}: $e'),
+              backgroundColor: Colors.red,
+            ));
           }
         }
-      } else if (_participantClient != null) {
-        _participantConnSub = _participantClient!.stateStream.listen((state) {
-          if (mounted) {
-            setState(() {
-              _participantState = state;
-            });
-          }
-        });
-        _participantStatusSub = _participantClient!.statusStream.listen((status) async {
-          if (mounted) {
-            setState(() {
-              _sessionStatusForParticipant = status;
-            });
-          }
-          if (status == 'ended') {
-            try {
-              await _roomService.leaveRoom(widget.sessionId);
-            } catch (_) {}
-            if (mounted) {
-              setState(() {
-                _participantState = LanConnectionState.disconnected;
-              });
-            }
-          }
-        });
+      }
+    }
+  }
+
+  Future<void> _attachContentSync(Session session, {required bool isHost}) async {
+    if (_contentSync != null) return;
+    final content = widget.contentRepository ??
+        (getIt.isRegistered<SessionContentRepository>()
+            ? getIt<SessionContentRepository>() : null);
+    final files = widget.voiceStore ??
+        (getIt.isRegistered<SessionVoiceStore>() ? getIt<SessionVoiceStore>() : null);
+    if (content == null || files == null) return;
+    final book = await _bookRepo.getBookById(session.bookId);
+    if (!mounted || _currentProfile == null) return;
+    _contentSync = SessionContentSync(
+      sessionId: session.id, bookId: session.bookId,
+      deviceId: _currentProfile!.id, displayName: _currentProfile!.displayName,
+      totalPages: book?.pageCount ?? 1,
+      repository: content, voiceStore: files,
+      progressRepository: _progressRepo,
+      readingTimeRepository: _readingTimeRepo,
+      host: isHost ? _hostServer : null,
+      participant: isHost ? null : _participantClient,
+    )..start();
+  }
+
+  Future<void> _handleParticipantStatus(String status) async {
+    if (mounted) setState(() => _sessionStatusForParticipant = status);
+    try {
+      if (status == 'ended') {
+        await _roomService.endSession(widget.sessionId);
+      } else if (status == 'saved') {
+        await _roomService.saveAndLeaveSession(
+          widget.sessionId,
+          lastPage: _participantClient?.currentPage,
+          totalPages: _participantClient?.totalPages,
+        );
+        await _roomService.leaveRoom(widget.sessionId);
+      } else if (status == 'paused') {
+        await _roomService.pauseSession(widget.sessionId);
+      } else if (status == 'active') {
+        // A returning participant had been marked 'left' when the old LAN
+        // connection was saved; the fresh Host snapshot reactivates that role.
+        await _roomService.joinRoom(sessionCode: widget.sessionId);
+        await _roomService.startSession(widget.sessionId);
+      }
+      if (status == 'ended' || status == 'saved') {
+        await _participantClient?.disconnect();
+        if (mounted) setState(() => _participantState = LanConnectionState.disconnected);
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('$e'), backgroundColor: Colors.red),
+        );
       }
     }
   }
@@ -269,8 +308,8 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
   void dispose() {
     _participantConnSub?.cancel();
     _hostParticipantsSub?.cancel();
-    _membersCountSub?.cancel();
     _participantStatusSub?.cancel();
+    if (_contentSync != null) unawaited(_contentSync!.dispose());
     if (widget.hostServer == null) {
       _hostServer?.stop();
       _hostServer?.dispose();
@@ -281,6 +320,131 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
     }
     _discoveryService.stopBeacon();
     super.dispose();
+  }
+
+  Future<void> _promptRoomExit() async {
+    if (_closingRoom || _exitDialogOpen) return;
+    _exitDialogOpen = true;
+    try {
+      final details = await _roomService.getRoomDetails(widget.sessionId);
+      if (!mounted) return;
+      if (details == null || !details.isHost ||
+          details.session.status == 'saved' || details.session.status == 'ended') {
+        await _leaveRoomDetail();
+        return;
+      }
+      final l10n = AppLocalizations.of(context);
+      final choice = await showDialog<String>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          key: const Key('room_leave_dialog'),
+          title: Text(l10n.whatWouldYouDo),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: Text(l10n.cancel)),
+            TextButton(
+              key: const Key('room_save_and_leave_button'),
+              onPressed: () => Navigator.pop(ctx, 'save'),
+              child: Text(l10n.saveAndLeave),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(ctx, 'end'),
+              child: Text(l10n.endReadingSession),
+            ),
+          ],
+        ),
+      );
+      if (!mounted) return;
+      if (choice == 'save') {
+        await _leaveRoomDetail();
+      } else if (choice == 'end') {
+        await _endRoom(widget.sessionId);
+        final latest = await _roomService.getRoomDetails(widget.sessionId);
+        if (mounted && latest?.session.status == 'ended') {
+          await _leaveRoomDetail();
+        }
+      }
+    } finally {
+      _exitDialogOpen = false;
+    }
+  }
+
+  Future<void> _leaveRoomDetail() async {
+    if (_closingRoom) return;
+    _closingRoom = true;
+    try {
+      final details = await _roomService.getRoomDetails(widget.sessionId);
+      if (details != null &&
+          details.session.status != 'saved' && details.session.status != 'ended') {
+        if (details.isHost) {
+          final saved = await _roomService.saveAndLeaveSession(
+            widget.sessionId,
+            lastPage: _hostServer?.currentPage,
+            totalPages: _hostServer?.totalPages,
+          );
+          if (!saved) throw StateError('Unable to save room history.');
+          _discoveryService.stopBeacon();
+          _hostServer?.broadcastSessionSaved();
+          await _hostServer?.stop();
+        } else {
+          final saved = await _roomService.saveAndLeaveSession(
+            widget.sessionId,
+            lastPage: _participantClient?.currentPage,
+            totalPages: _participantClient?.totalPages,
+          );
+          if (!saved) throw StateError('Unable to save room history.');
+          await _roomService.leaveRoom(widget.sessionId);
+          await _participantClient?.disconnect();
+        }
+      }
+      if (mounted) {
+        setState(() => _exitApproved = true);
+        Navigator.pop(context);
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('${AppLocalizations.of(context).failedToSaveSession}: $e'),
+          backgroundColor: Colors.red,
+        ));
+      }
+    } finally {
+      _closingRoom = false;
+    }
+  }
+
+  Future<void> _endRoom(String sessionId) async {
+    final l10n = AppLocalizations.of(context);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        key: const Key('room_confirm_end_dialog'),
+        title: Text(l10n.confirmEndTitle),
+        content: Text(l10n.confirmEndBody),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: Text(l10n.cancel)),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text(l10n.endReadingSession),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    try {
+      final ended = await _roomService.endSession(sessionId);
+      if (!ended) throw StateError('Session could not be ended.');
+      _discoveryService.stopBeacon();
+      _hostServer?.broadcastSessionEnded();
+      await _hostServer?.stop();
+      if (mounted) setState(() => _lanConnectedCount = 0);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('${AppLocalizations.of(context).failedToEndSession}: $e'),
+          backgroundColor: Colors.red,
+        ));
+      }
+    }
   }
 
   Color _getStatusColor(String status) {
@@ -299,7 +463,12 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
   @override
   Widget build(BuildContext context) {
     final l10n = AppLocalizations.of(context);
-    return StreamBuilder<Session?>(
+    return PopScope(
+      canPop: _exitApproved,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop) _promptRoomExit();
+      },
+      child: StreamBuilder<Session?>(
       stream: _sessionStream,
       builder: (context, sessionSnap) {
         final session = sessionSnap.data;
@@ -310,7 +479,9 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
           );
         }
 
-        final displayStatus = session.status == 'ended' ? l10n.ended : session.status.toUpperCase();
+        final displayStatus = session.status == 'ended' ? l10n.ended
+            : session.status == 'saved' ? l10n.savedStatus
+            : session.status.toUpperCase();
 
         return Scaffold(
           appBar: AppBar(
@@ -352,13 +523,18 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
           ),
         );
       },
+      ),
     );
   }
 
   Widget _buildSessionCodeCard(Session session) {
     final l10n = AppLocalizations.of(context);
     final isHost = _currentProfile != null && session.hostDeviceId == _currentProfile!.id;
-    final ipDisplay = _hostDisplayIp.isEmpty ? '...' : _hostDisplayIp;
+    final hostEndpoint = _hostServer?.isRunning == true &&
+            session.status != 'saved' && session.status != 'ended' &&
+            _hostDisplayIp.isNotEmpty && !LanIpHelper.isLoopback(_hostDisplayIp)
+        ? '$_hostDisplayIp:$_hostPort'
+        : l10n.disconnected;
 
     return Card(
       elevation: 0,
@@ -400,15 +576,36 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
                     ),
                   ],
                 ),
-                IconButton(
-                  icon: AppIcon.copy(color: Color(0xFF2563EB)),
-                  tooltip: l10n.copyCode,
-                  onPressed: () {
-                    Clipboard.setData(ClipboardData(text: session.id));
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text(l10n.copiedToClipboard(session.id))),
-                    );
-                  },
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    IconButton(
+                      key: const Key('copy_room_code_button'),
+                      icon: AppIcon.copy(color: Color(0xFF2563EB)),
+                      tooltip: l10n.copyCode,
+                      onPressed: () {
+                        Clipboard.setData(ClipboardData(text: session.id));
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text(l10n.copiedToClipboard(session.id))),
+                        );
+                      },
+                    ),
+                    IconButton(
+                      key: const Key('share_room_code_button'),
+                      icon: const Icon(Icons.share, color: Color(0xFF2563EB)),
+                      tooltip: l10n.tr('shareRoomCode'),
+                      onPressed: () async {
+                        try {
+                          await AppSharingService.shareRoomCode(session.id,
+                              arabic: l10n.isArabic);
+                        } catch (error) {
+                          if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(content: Text('${l10n.tr('shareFailed')}: $error')),
+                          );
+                        }
+                      },
+                    ),
+                  ],
                 ),
               ],
             ),
@@ -426,7 +623,7 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
                         const SizedBox(width: 6),
                         Expanded(
                           child: Text(
-                            '${l10n.lanHost}: $ipDisplay:$_hostPort',
+                            '${l10n.lanHost}: $hostEndpoint',
                             key: const Key('lan_host_endpoint_display'),
                             style: const TextStyle(
                               fontSize: 12,
@@ -483,7 +680,11 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
                       ),
                     ],
                   ),
-                  if (_participantState == LanConnectionState.disconnected)
+                  if (_participantState == LanConnectionState.disconnected &&
+                      _participantClient != null && session.status != 'ended' &&
+                      session.status != 'saved' &&
+                      _sessionStatusForParticipant != 'ended' &&
+                      _sessionStatusForParticipant != 'saved')
                     TextButton.icon(
                       key: const Key('reconnect_lan_button'),
                       onPressed: () {
@@ -540,9 +741,10 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
                   width: double.infinity,
                   child: ElevatedButton.icon(
                     key: const Key('start_session_button'),
-                    onPressed: () {
-                      _roomService.startSession(session.id);
-                      _hostServer?.broadcastSessionStarted();
+                    onPressed: () async {
+                      if (await _roomService.startSession(session.id)) {
+                        _hostServer?.broadcastSessionStarted();
+                      }
                     },
                     icon: AppIcon.play(),
                     label: Text(l10n.startReadingSession),
@@ -555,9 +757,10 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
                     Expanded(
                       child: OutlinedButton.icon(
                         key: const Key('pause_session_button'),
-                        onPressed: () {
-                          _roomService.pauseSession(session.id);
-                          _hostServer?.broadcastSessionPaused();
+                        onPressed: () async {
+                          if (await _roomService.pauseSession(session.id)) {
+                            _hostServer?.broadcastSessionPaused();
+                          }
                         },
                         icon: AppIcon.pause(),
                         label: Text(l10n.pause),
@@ -567,18 +770,7 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
                     Expanded(
                       child: ElevatedButton.icon(
                         key: const Key('end_session_button'),
-                        onPressed: () async {
-                          await _roomService.endSession(session.id);
-                          _hostServer?.broadcastSessionEnded();
-                          // After ended, stop beacon and clear connected count
-                          _discoveryService.stopBeacon();
-                          await _hostServer?.stop();
-                          if (mounted) {
-                            setState(() {
-                              _lanConnectedCount = 0;
-                            });
-                          }
-                        },
+                        onPressed: () => _endRoom(session.id),
                         icon: AppIcon.stop(),
                         label: Text(l10n.endRoom),
                         style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFEF4444)),
@@ -592,9 +784,10 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
                     Expanded(
                       child: ElevatedButton.icon(
                         key: const Key('resume_session_button'),
-                        onPressed: () {
-                          _roomService.resumeSession(session.id);
-                          _hostServer?.broadcastSessionResumed();
+                        onPressed: () async {
+                          if (await _roomService.resumeSession(session.id)) {
+                            _hostServer?.broadcastSessionResumed();
+                          }
                         },
                         icon: AppIcon.play(),
                         label: Text(l10n.resume),
@@ -605,17 +798,7 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
                     Expanded(
                       child: OutlinedButton.icon(
                         key: const Key('end_session_button_paused'),
-                        onPressed: () async {
-                          await _roomService.endSession(session.id);
-                          _hostServer?.broadcastSessionEnded();
-                          _discoveryService.stopBeacon();
-                          await _hostServer?.stop();
-                          if (mounted) {
-                            setState(() {
-                              _lanConnectedCount = 0;
-                            });
-                          }
-                        },
+                        onPressed: () => _endRoom(session.id),
                         icon: AppIcon.stop(),
                         label: Text(l10n.endRoom),
                         style: OutlinedButton.styleFrom(foregroundColor: const Color(0xFFEF4444)),
@@ -623,6 +806,8 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
                     ),
                   ],
                 ),
+              if (session.status == 'saved')
+                Center(child: Text('${l10n.savedStatus} • ${l10n.mySessions}')),
               if (session.status == 'ended')
                 Center(
                   child: Text(
@@ -636,7 +821,7 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
                     ? l10n.hostRunning
                     : session.status == 'paused'
                         ? l10n.hostPaused
-                        : l10n.sessionEnded,
+                        : session.status == 'saved' ? l10n.savedStatus : l10n.sessionEnded,
                 style: const TextStyle(color: Color(0xFF475569)),
               ),
               if (_sessionStatusForParticipant == 'ended' || session.status == 'ended')
@@ -658,7 +843,8 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
     final l10n = AppLocalizations.of(context);
     if (_currentProfile == null) return const SizedBox.shrink();
     final isHost = session.hostDeviceId == _currentProfile!.id;
-    final isEnded = session.status == 'ended';
+    final canRead = session.status != 'ended' && session.status != 'saved' &&
+        (isHost ? _hostServer?.isRunning == true : _participantClient?.isJoined == true);
 
     return FutureBuilder<Book?>(
       future: _bookRepo.getBookById(session.bookId),
@@ -705,7 +891,7 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
                   width: double.infinity,
                   child: ElevatedButton.icon(
                     key: const Key('open_room_book_button'),
-                    onPressed: isEnded
+                    onPressed: !canRead
                         ? null
                         : () {
                             Navigator.push(
@@ -717,6 +903,8 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
                                   isHost: isHost,
                                   hostServer: _hostServer,
                                   participantClient: _participantClient,
+                                  contentSync: _contentSync,
+                                  onLanSessionClosed: _discoveryService.stopBeacon,
                                 ),
                               ),
                             );
@@ -725,7 +913,7 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
                     label: Text(isHost ? l10n.readAsHost : l10n.readAsParticipant),
                   ),
                 ),
-                if (isEnded)
+                if (session.status == 'ended')
                   Padding(
                     padding: const EdgeInsets.only(top: 8.0),
                     child: Text(
@@ -797,14 +985,47 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
                         member.displayName,
                         style: const TextStyle(fontWeight: FontWeight.w600),
                       ),
-                      subtitle: Text(
-                        '${l10n.status}: $displayStatus',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: (!isEnded && member.status == 'active')
-                              ? const Color(0xFF10B981)
-                              : Colors.grey,
-                        ),
+                      subtitle: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '${l10n.status}: $displayStatus',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: (!isEnded && member.status == 'active')
+                                  ? const Color(0xFF10B981) : Colors.grey,
+                            ),
+                          ),
+                          if (_readingTimeRepo != null)
+                            StreamBuilder<List<ParticipantReadingTime>>(
+                              stream: _readingTimeRepo!.watchSessionTimes(session.id),
+                              builder: (context, timeSnap) {
+                                final found = timeSnap.data?.where(
+                                    (t) => t.deviceId == member.deviceId).toList() ?? [];
+                                if (found.isEmpty) return const SizedBox.shrink();
+                                final seconds = found.first.totalSeconds;
+                                final minutes = seconds ~/ 60;
+                                final remainder = seconds % 60;
+                                return Text('${l10n.tr('readTime')}: '
+                                    '$minutes:${remainder.toString().padLeft(2, '0')}',
+                                    style: const TextStyle(fontSize: 11));
+                              },
+                            ),
+                          if (_progressRepo != null)
+                            StreamBuilder<List<ReadingProgress>>(
+                              stream: _progressRepo!.watchSessionProgress(session.id),
+                              builder: (context, progressSnap) {
+                                final found = progressSnap.data?.where(
+                                    (p) => p.deviceId == member.deviceId).toList() ?? [];
+                                if (found.isEmpty) return const SizedBox.shrink();
+                                return Text(
+                                  '${l10n.tr('participantProgress')}: '
+                                  '${l10n.pageOf(found.first.currentPage, found.first.totalPages)}',
+                                  style: const TextStyle(fontSize: 11),
+                                );
+                              },
+                            ),
+                        ],
                       ),
                       trailing: Chip(
                         label: Text(

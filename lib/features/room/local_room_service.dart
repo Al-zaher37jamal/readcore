@@ -44,6 +44,8 @@ class LocalRoomService {
         _bookRepository = bookRepository,
         _uuid = uuid ?? const Uuid();
 
+  Future<DeviceProfile> getCurrentProfile() => _deviceService.getOrCreateCurrentProfile();
+
   /// Generates a simple, human-friendly 6-character session code (e.g. "RM-4821").
   String generateSessionCode() {
     final random = Random();
@@ -177,9 +179,18 @@ class LocalRoomService {
     return _sessionRepository.updateSessionStatus(sessionId, 'active');
   }
 
+  /// Saves this device's room history without ending the shared reading session.
+  Future<bool> saveAndLeaveSession(String sessionId, {int? lastPage, int? totalPages}) {
+    return _sessionRepository.saveAndLeaveSession(
+      sessionId,
+      lastPage: lastPage,
+      totalPages: totalPages,
+    );
+  }
+
   /// Ends the reading session permanently and marks all members as left/not active.
   Future<bool> endSession(String sessionId) async {
-    final success = await _sessionRepository.updateSessionStatus(sessionId, 'ended');
+    final success = await _sessionRepository.endReadingSession(sessionId);
     if (success) {
       try {
         final members = await _sessionMemberRepository.getMembersBySessionId(sessionId);
@@ -197,7 +208,7 @@ class LocalRoomService {
 
   /// Marks all members as left when session ends – used for strict consistency (optional)
   Future<void> endSessionAndClearParticipants(String sessionId) async {
-    await _sessionRepository.updateSessionStatus(sessionId, 'ended');
+    await _sessionRepository.endReadingSession(sessionId);
     try {
       final members = await _sessionMemberRepository.getMembersBySessionId(sessionId);
       for (final m in members) {
