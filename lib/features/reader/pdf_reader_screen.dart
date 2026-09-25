@@ -258,13 +258,14 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> with WidgetsBindingOb
           status: 'active',
         );
       } else {
-        if (existingSession.status == 'ended') {
+        final sessionStatus = existingSession.status;
+        if (sessionStatus == 'ended') {
           setState(() {
             _sessionStatus = 'ended';
           });
         } else {
           setState(() {
-            _sessionStatus = existingSession.status;
+            _sessionStatus = sessionStatus;
           });
         }
       }

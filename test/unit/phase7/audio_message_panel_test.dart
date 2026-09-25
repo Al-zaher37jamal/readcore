@@ -112,17 +112,17 @@ void main() {
     expect(await File(sameFile).exists(), isTrue);
     expect(find.text('00:02'), findsWidgets);
 
-    await tester.tap(find.byKey(const Key('audio_play_${_draftId(sameFile)}')));
+    await tester.tap(find.byKey(Key('audio_play_${_draftId(sameFile)}')));
     await tester.pump();
     expect(service.playbackPath, sameFile);
-    await tester.tap(find.byKey(const Key('audio_play_${_draftId(sameFile)}')));
+    await tester.tap(find.byKey(Key('audio_play_${_draftId(sameFile)}')));
     await tester.pump();
     expect(service.playing, isFalse);
     final pausedPosition = service.positionMs;
-    await tester.tap(find.byKey(const Key('audio_play_${_draftId(sameFile)}')));
+    await tester.tap(find.byKey(Key('audio_play_${_draftId(sameFile)}')));
     await tester.pump();
     expect(service.positionMs, greaterThanOrEqualTo(pausedPosition));
-    await tester.tap(find.byKey(const Key('audio_stop_${_draftId(sameFile)}')));
+    await tester.tap(find.byKey(Key('audio_stop_${_draftId(sameFile)}')));
     await tester.pump();
 
     await tester.tap(find.byKey(const Key('send_audio_message')));
