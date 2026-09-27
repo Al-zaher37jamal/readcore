@@ -23,6 +23,17 @@ class SessionsTable extends Table {
   BoolColumn get timerEnabled => boolean().withDefault(const Constant(false))();
   BoolColumn get statsEnabled => boolean().withDefault(const Constant(false))();
 
+  // Phase 8: a session-wide countdown; the Phase 6 timerEnabled flag and
+  // participant_reading_time track elapsed statistics, not this deadline.
+  // The checked-in Drift .g.dart predates these columns. Migration v6 adds
+  // them to both fresh and existing databases; repository reads use SQL.
+  IntColumn get readingDurationMinutes => integer().nullable()();
+  DateTimeColumn get readingStartedAt => dateTime().nullable()();
+  DateTimeColumn get readingEndsAt => dateTime().nullable()();
+  TextColumn get readingConfiguredByLeaderId => text().nullable()();
+  TextColumn get readingTimerStatus => text()
+      .withDefault(const Constant('not_configured'))();
+
   @override
   Set<Column> get primaryKey => {id};
 }

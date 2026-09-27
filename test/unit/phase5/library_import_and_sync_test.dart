@@ -79,10 +79,11 @@ void main() {
       });
       await tester.pump();
 
-      expect(find.byKey(const Key('add_pdf_file_button_appbar')), findsOneWidget);
-      expect(find.byKey(const Key('add_pdf_fab')), findsOneWidget);
-      expect(find.byKey(const Key('add_pdf_file_button_empty')), findsOneWidget);
-      expect(find.text('إضافة ملف PDF'), findsWidgets);
+      expect(find.byKey(const Key('add_pdf_file_button_header')), findsOneWidget);
+      expect(find.byKey(const Key('add_pdf_file_button_appbar')), findsNothing);
+      expect(find.byKey(const Key('add_pdf_fab')), findsNothing);
+      expect(find.byKey(const Key('add_pdf_file_button_empty')), findsNothing);
+      expect(find.text('إضافة ملف PDF'), findsOneWidget);
     });
 
     test('Import flow: real PDF file can be imported via existing pipeline', () async {

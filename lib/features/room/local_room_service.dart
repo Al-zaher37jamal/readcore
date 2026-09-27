@@ -44,6 +44,8 @@ class LocalRoomService {
         _bookRepository = bookRepository,
         _uuid = uuid ?? const Uuid();
 
+  Future<DeviceProfile> getCurrentProfile() => _deviceService.getOrCreateCurrentProfile();
+
   /// Generates a simple, human-friendly 6-character session code (e.g. "RM-4821").
   String generateSessionCode() {
     final random = Random();
@@ -83,8 +85,9 @@ class LocalRoomService {
   }
 
   /// Joins an existing reading room using its session code.
-  /// FIXED: Handles remote LAN join where session not in local DB (e.g. Host RM-2936 on 10.87.235.106).
-  /// If session not found locally, creates placeholder remote session using first available local book.
+  /// Remote LAN join creates one local copy of the Host's session, then
+  /// reuses it on subsequent joins. When the Host advertises the PDF digest,
+  /// bind it to this device's matching import (whose UUID may differ).
   Future<Session> joinRoom({
     required String sessionCode,
     String? customDisplayName,
@@ -92,9 +95,46 @@ class LocalRoomService {
     String? remoteTitle,
     String? remoteHostDeviceId,
     String? remoteBookId,
+    String? remoteBookSha256,
   }) async {
     final normalizedCode = sessionCode.trim().toUpperCase();
     var session = await _sessionRepository.getSessionById(normalizedCode);
+    if (session?.status == 'ended') {
+      throw const DatabaseOperationException('Cannot join an ended room session.');
+    }
+    if (session != null && remoteHostDeviceId != null &&
+        session.hostDeviceId != remoteHostDeviceId) {
+      throw const DatabaseOperationException('Room code belongs to another Host.');
+    }
+    // A live remote room must identify its PDF. Without a digest an older
+    // Host's snapshot could silently bind this session to books.first.
+    if (remoteHostDeviceId != null &&
+        (remoteBookSha256 == null || remoteBookSha256.isEmpty)) {
+      throw const NotFoundException('Host PDF fingerprint unavailable.');
+    }
+
+    // Book IDs are random per import/device. A room's PDF is identified by
+    // its digest, not by whichever unrelated book happens to be listed first.
+    Book? matchingBook;
+    if (remoteBookSha256 != null && remoteBookSha256.isNotEmpty) {
+      matchingBook = await _bookRepository?.getBookBySha256(remoteBookSha256);
+      if (matchingBook == null) {
+        throw const NotFoundException('Import the same PDF as the Host before joining.');
+      }
+      if (session != null && session.bookId != matchingBook.id) {
+        // Old versions chose the first Library book on the participant.
+        // Repair that *saved* copy only when the live Host identity matches;
+        // never silently attach another Host's room to this history.
+        if (session.status != 'saved' ||
+            session.hostDeviceId != remoteHostDeviceId ||
+            !await _sessionRepository.rebindSavedSessionBook(
+                normalizedCode, matchingBook.id)) {
+          throw const DatabaseOperationException('This room is linked to a different PDF on this device.');
+        }
+        session = await _sessionRepository.getSessionById(normalizedCode) ??
+            (throw StateError('Saved room disappeared during PDF repair.'));
+      }
+    }
 
     if (session == null) {
       // Remote LAN join: session not in local DB, create placeholder
@@ -105,8 +145,8 @@ class LocalRoomService {
           if (books.isEmpty) {
             throw NotFoundException('Room with code "$normalizedCode" was not found. Please import a book first.');
           }
-          String bookIdToUse = books.first.id;
-          if (remoteBookId != null) {
+          String bookIdToUse = matchingBook?.id ?? books.first.id;
+          if (matchingBook == null && remoteBookId != null) {
             final exists = books.any((b) => b.id == remoteBookId);
             if (exists) bookIdToUse = remoteBookId;
           }
@@ -162,6 +202,40 @@ class LocalRoomService {
     return session;
   }
 
+  Future<({int page, int totalPages})?> getSessionPage(String sessionId) =>
+      _sessionRepository.getSessionPage(sessionId);
+
+  /// Mirror actual joined Host sockets into the existing member rows. A
+  /// reconnect reactivates the same device ID/row; a closed socket is no
+  /// longer counted as active, while its membership remains on disk.
+  Future<void> syncConnectedParticipants(
+      String sessionId, Map<String, String> connected) async {
+    final session = await _sessionRepository.getSessionById(sessionId);
+    if (session == null || session.status == 'ended') return;
+    final members = await _sessionMemberRepository.getMembersBySessionId(sessionId);
+    final known = {for (final member in members) member.deviceId: member};
+    final activeIds = session.status == 'saved'
+        ? <String>{} : connected.keys.toSet();
+    for (final id in activeIds) {
+      if (id == session.hostDeviceId) continue;
+      final member = known[id];
+      if (member == null) {
+        await _sessionMemberRepository.addMember(
+          id: _uuid.v4(), sessionId: sessionId, deviceId: id,
+          displayName: connected[id]!, role: 'participant', status: 'active',
+        );
+      } else if (member.status != 'active') {
+        await _sessionMemberRepository.updateMemberStatus(member.id, 'active');
+      }
+    }
+    for (final member in members) {
+      if (member.role != 'host' && member.status == 'active' &&
+          !activeIds.contains(member.deviceId)) {
+        await _sessionMemberRepository.updateMemberStatus(member.id, 'disconnected');
+      }
+    }
+  }
+
   /// Starts the reading session, setting status to 'active'.
   Future<bool> startSession(String sessionId) async {
     return _sessionRepository.updateSessionStatus(sessionId, 'active');
@@ -177,9 +251,18 @@ class LocalRoomService {
     return _sessionRepository.updateSessionStatus(sessionId, 'active');
   }
 
+  /// Saves this device's room history without ending the shared reading session.
+  Future<bool> saveAndLeaveSession(String sessionId, {int? lastPage, int? totalPages}) {
+    return _sessionRepository.saveAndLeaveSession(
+      sessionId,
+      lastPage: lastPage,
+      totalPages: totalPages,
+    );
+  }
+
   /// Ends the reading session permanently and marks all members as left/not active.
   Future<bool> endSession(String sessionId) async {
-    final success = await _sessionRepository.updateSessionStatus(sessionId, 'ended');
+    final success = await _sessionRepository.endReadingSession(sessionId);
     if (success) {
       try {
         final members = await _sessionMemberRepository.getMembersBySessionId(sessionId);
@@ -197,7 +280,7 @@ class LocalRoomService {
 
   /// Marks all members as left when session ends – used for strict consistency (optional)
   Future<void> endSessionAndClearParticipants(String sessionId) async {
-    await _sessionRepository.updateSessionStatus(sessionId, 'ended');
+    await _sessionRepository.endReadingSession(sessionId);
     try {
       final members = await _sessionMemberRepository.getMembersBySessionId(sessionId);
       for (final m in members) {

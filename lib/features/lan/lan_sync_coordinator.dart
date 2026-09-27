@@ -113,9 +113,17 @@ class LanSyncCoordinator {
       await _persistParticipantProgress(page);
     });
 
-    // Listen to status updates from Host and update local session in SQLite
+    // Preserve the distinction between Host Save and End on this device too.
     _participantStatusSub = _participantClient!.statusStream.listen((status) async {
-      await _sessionRepo.updateSessionStatus(sessionId, status);
+      if (status == 'saved') {
+        await _sessionRepo.saveAndLeaveSession(sessionId,
+            lastPage: _participantClient?.currentPage,
+            totalPages: _participantClient?.totalPages);
+      } else if (status == 'ended') {
+        await _sessionRepo.endReadingSession(sessionId);
+      } else {
+        await _sessionRepo.updateSessionStatus(sessionId, status);
+      }
     });
 
     await _participantClient!.connect(hostAddress: hostAddress, port: port);
@@ -167,8 +175,9 @@ class LanSyncCoordinator {
   /// Host action: ends session.
   Future<void> hostEndSession() async {
     if (!isHost) return;
-    await _sessionRepo.updateSessionStatus(sessionId, 'ended');
-    _hostServer?.broadcastSessionEnded();
+    if (await _sessionRepo.endReadingSession(sessionId)) {
+      _hostServer?.broadcastSessionEnded();
+    }
   }
 
   /// Persists participant's synchronized page to SQLite.

@@ -7,13 +7,19 @@ import 'package:readmesh/core/l10n/app_localizations.dart';
 import 'package:readmesh/core/l10n/language_service.dart';
 import 'package:readmesh/core/theme/app_theme.dart';
 import 'package:readmesh/data/repositories/kvs_repository.dart';
+import 'package:readmesh/data/repositories/session_repository.dart';
 import 'package:readmesh/features/library/pdf_library_screen.dart';
 import 'package:readmesh/features/room/rooms_screen.dart';
 import 'package:readmesh/features/session_history/my_sessions_screen.dart';
+import 'package:readmesh/features/session_content/app_sharing_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await setupLocator();
+  // No previous process can still be hosting this device's room. Force-close
+  // and OS termination have no reliable Dart callback; recover their local
+  // SQLite history as Saved, never Ended, before the screens are constructed.
+  await getIt<SessionRepository>().recoverInterruptedSessions();
   final languageService = getIt<LanguageService>();
   runApp(ReadMeshApp(languageService: languageService));
 }
@@ -81,6 +87,25 @@ class _ReadMeshMainShellState extends State<ReadMeshMainShell> {
       appBar: AppBar(
         title: Text(l10n.appNameLabel),
         actions: [
+          IconButton(
+            key: const Key('share_app_apk_button'),
+            icon: const Icon(Icons.share),
+            tooltip: l10n.tr('shareApp'),
+            onPressed: () async {
+              try {
+                final shared = await AppSharingService.shareInstalledApk();
+                if (!shared && context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text(l10n.tr('apkUnavailable'))),
+                  );
+                }
+              } catch (error) {
+                if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('${l10n.tr('shareFailed')}: $error')),
+                );
+              }
+            },
+          ),
           IconButton(
             icon: AppIcon.language(),
             tooltip: l10n.language,

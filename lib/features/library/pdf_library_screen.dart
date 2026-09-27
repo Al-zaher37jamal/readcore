@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
@@ -8,6 +9,7 @@ import 'package:readmesh/core/l10n/app_localizations.dart';
 import 'package:readmesh/data/database/app_database.dart';
 import 'package:readmesh/data/repositories/book_repository.dart';
 import 'package:readmesh/data/repositories/reading_progress_repository.dart';
+import 'package:readmesh/data/repositories/session_repository.dart';
 import 'package:readmesh/data/storage/book_file_manager.dart';
 import 'package:readmesh/data/storage/pdf_import_pipeline.dart';
 import 'package:readmesh/data/storage/storage_manager.dart';
@@ -19,6 +21,7 @@ import 'package:readmesh/features/reader/pdf_reader_screen.dart';
 class PdfLibraryScreen extends StatefulWidget {
   final BookRepository? bookRepository;
   final ReadingProgressRepository? readingProgressRepository;
+  final SessionRepository? sessionRepository;
   final PdfImportPipeline? pdfImportPipeline;
   final DeviceService? deviceService;
   final BookFileManager? bookFileManager;
@@ -27,6 +30,7 @@ class PdfLibraryScreen extends StatefulWidget {
     super.key,
     this.bookRepository,
     this.readingProgressRepository,
+    this.sessionRepository,
     this.pdfImportPipeline,
     this.deviceService,
     this.bookFileManager,
@@ -39,6 +43,8 @@ class PdfLibraryScreen extends StatefulWidget {
 class _PdfLibraryScreenState extends State<PdfLibraryScreen> {
   late final BookRepository _bookRepo;
   late final ReadingProgressRepository _progressRepo;
+  late final SessionRepository? _sessionRepo;
+  late final Stream<List<Session>>? _savedSessions;
   late final PdfImportPipeline _importPipeline;
   late final DeviceService _deviceService;
   late final BookFileManager _fileManager;
@@ -50,6 +56,9 @@ class _PdfLibraryScreenState extends State<PdfLibraryScreen> {
     super.initState();
     _bookRepo = widget.bookRepository ?? getIt<BookRepository>();
     _progressRepo = widget.readingProgressRepository ?? getIt<ReadingProgressRepository>();
+    _sessionRepo = widget.sessionRepository ??
+        (getIt.isRegistered<SessionRepository>() ? getIt<SessionRepository>() : null);
+    _savedSessions = _sessionRepo?.watchSavedSessions();
     _importPipeline = widget.pdfImportPipeline ?? getIt<PdfImportPipeline>();
     _deviceService = widget.deviceService ?? getIt<DeviceService>();
     _fileManager = widget.bookFileManager ?? getIt<BookFileManager>();
@@ -275,24 +284,10 @@ class _PdfLibraryScreenState extends State<PdfLibraryScreen> {
                 ),
               ),
             )
-          else ...[
-            IconButton(
-              key: const Key('add_pdf_file_button_appbar'),
-              icon: AppIcon.add(),
-              tooltip: l10n.addPdfFile,
-              onPressed: _pickAndImportPdf,
-            ),
-          ],
         ],
       ),
-      floatingActionButton: _isImporting
-          ? null
-          : FloatingActionButton.extended(
-              key: const Key('add_pdf_fab'),
-              onPressed: _pickAndImportPdf,
-              icon: AppIcon.add(),
-              label: Text(l10n.addPdfFile),
-            ),
+      // A single prominent import action remains at the top of the library.
+      // The AppBar icon, empty-state duplicate, and FAB were the same action.
       body: Column(
         children: [
           // ALWAYS VISIBLE primary Add PDF header - impossible to miss on real device
@@ -338,13 +333,28 @@ class _PdfLibraryScreenState extends State<PdfLibraryScreen> {
                   return _buildEmptyState();
                 }
 
-                return ListView.separated(
-                  padding: const EdgeInsets.all(16),
-                  itemCount: books.length,
-                  separatorBuilder: (_, __) => const SizedBox(height: 12),
-                  itemBuilder: (context, index) {
-                    final book = books[index];
-                    return _buildBookCard(book);
+                return StreamBuilder<List<Session>>(
+                  stream: _savedSessions,
+                  builder: (context, savedSnapshot) {
+                    // Saved sessions are ordered newest-first by the existing
+                    // repository. Preserve Read Now; only Continue uses the
+                    // original sessionId and thus its per-page messages.
+                    final savedByBook = <String, Session>{};
+                    for (final session in savedSnapshot.data ?? <Session>[]) {
+                      if (session.status == 'saved' &&
+                          session.id.startsWith('solo_')) {
+                        savedByBook.putIfAbsent(session.bookId, () => session);
+                      }
+                    }
+                    return ListView.separated(
+                      padding: const EdgeInsets.all(16),
+                      itemCount: books.length,
+                      separatorBuilder: (_, __) => const SizedBox(height: 12),
+                      itemBuilder: (context, index) {
+                        final book = books[index];
+                        return _buildBookCard(book, savedSolo: savedByBook[book.id]);
+                      },
+                    );
                   },
                 );
               },
@@ -387,19 +397,6 @@ class _PdfLibraryScreenState extends State<PdfLibraryScreen> {
               style: const TextStyle(color: Color(0xFF64748B)),
             ),
             const SizedBox(height: 24),
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton.icon(
-                key: const Key('add_pdf_file_button_empty'),
-                onPressed: _isImporting ? null : _pickAndImportPdf,
-                icon: AppIcon.add(),
-                label: Text(l10n.addPdfFile),
-                style: ElevatedButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(vertical: 14),
-                ),
-              ),
-            ),
-            const SizedBox(height: 12),
             OutlinedButton.icon(
               onPressed: _isImporting ? null : () => _importSampleBook(),
               icon: AppIcon.pdf(size: 18),
@@ -411,7 +408,33 @@ class _PdfLibraryScreenState extends State<PdfLibraryScreen> {
     );
   }
 
-  Widget _buildBookCard(Book book) {
+  Future<void> _continueSavedSolo(Book book, Session session) async {
+    final repo = _sessionRepo;
+    if (repo == null) return;
+    try {
+      final latest = await repo.getSessionById(session.id);
+      if (latest == null || latest.status != 'saved' ||
+          latest.bookId != book.id || !latest.id.startsWith('solo_')) {
+        throw StateError('This saved reading session is no longer available');
+      }
+      if (!await File(book.filePath).exists()) {
+        throw StateError('PDF file not found: ${book.filePath}');
+      }
+      if (!mounted) return;
+      if (!await repo.updateSessionStatus(latest.id, 'active')) {
+        throw StateError('Could not resume the saved reading session');
+      }
+      if (!mounted) return;
+      await Navigator.push(context, MaterialPageRoute(builder: (_) =>
+          PdfReaderScreen(book: book, sessionId: latest.id)));
+    } catch (error) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('$error'), backgroundColor: Colors.red,
+      ));
+    }
+  }
+
+  Widget _buildBookCard(Book book, {Session? savedSolo}) {
     final l10n = AppLocalizations.of(context);
     return Card(
       elevation: 1,
@@ -516,6 +539,7 @@ class _PdfLibraryScreenState extends State<PdfLibraryScreen> {
             SizedBox(
               width: double.infinity,
               child: ElevatedButton.icon(
+                key: Key('read_now_book_${book.id}'),
                 onPressed: () {
                   Navigator.push(
                     context,
@@ -528,6 +552,15 @@ class _PdfLibraryScreenState extends State<PdfLibraryScreen> {
                 label: Text(l10n.readNow),
               ),
             ),
+            if (savedSolo != null) ...[
+              const SizedBox(height: 8),
+              SizedBox(width: double.infinity, child: OutlinedButton.icon(
+                key: Key('continue_saved_book_${book.id}'),
+                onPressed: () => _continueSavedSolo(book, savedSolo),
+                icon: const Icon(Icons.history),
+                label: Text(l10n.continueReading),
+              )),
+            ],
           ],
         ),
       ),

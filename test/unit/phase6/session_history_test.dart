@@ -326,8 +326,6 @@ void main() {
         requestedPort: 0,
       );
       await hostServer1.start(bindAddress: InternetAddress.loopbackIPv4);
-      final firstPort = hostServer1.port;
-      final firstIp = hostServer1.localIp;
       await hostServer1.stop();
       hostServer1.dispose();
 

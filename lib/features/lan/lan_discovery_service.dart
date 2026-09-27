@@ -45,6 +45,9 @@ class LanDiscoveryService {
   RawDatagramSocket? _broadcastSocket;
   RawDatagramSocket? _listenSocket;
   Timer? _beaconTimer;
+  Timer? _expiryTimer;
+  int _beaconGeneration = 0;
+  int _listeningGeneration = 0;
 
   final Map<String, DiscoveredRoom> _discoveredRooms = {};
   final StreamController<List<DiscoveredRoom>> _roomsController =
@@ -52,6 +55,16 @@ class LanDiscoveryService {
 
   Stream<List<DiscoveredRoom>> get roomsStream => _roomsController.stream;
   List<DiscoveredRoom> get discoveredRooms => _discoveredRooms.values.toList();
+  bool get isListening => _listenSocket != null;
+  int? get listeningPort => _listenSocket?.port;
+
+  DiscoveredRoom? roomForCode(String code) {
+    final normalized = code.trim().toUpperCase();
+    for (final room in discoveredRooms) {
+      if (room.sessionId.toUpperCase() == normalized) return room;
+    }
+    return null;
+  }
 
   /// Starts periodic UDP broadcasting for a Host room.
   Future<void> startBeacon({
@@ -62,13 +75,19 @@ class LanDiscoveryService {
     int discoveryPort = defaultDiscoveryPort,
   }) async {
     stopBeacon();
+    final generation = _beaconGeneration;
 
     try {
-      _broadcastSocket = await RawDatagramSocket.bind(
+      final socket = await RawDatagramSocket.bind(
         InternetAddress.anyIPv4,
         0,
         reuseAddress: true,
       );
+      if (generation != _beaconGeneration) {
+        socket.close();
+        return;
+      }
+      _broadcastSocket = socket;
       _broadcastSocket?.broadcastEnabled = true;
 
       final beaconData = utf8.encode(
@@ -81,15 +100,14 @@ class LanDiscoveryService {
         }),
       );
 
-      _beaconTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+      void sendBeacon() {
         try {
-          _broadcastSocket?.send(
-            beaconData,
-            InternetAddress('255.255.255.255'),
-            discoveryPort,
-          );
+          _broadcastSocket?.send(beaconData,
+              InternetAddress('255.255.255.255'), discoveryPort);
         } catch (_) {}
-      });
+      }
+      sendBeacon();
+      _beaconTimer = Timer.periodic(const Duration(seconds: 2), (_) => sendBeacon());
     } catch (_) {
       // Graceful fallback if UDP broadcast is restricted
     }
@@ -97,6 +115,7 @@ class LanDiscoveryService {
 
   /// Stops the Host beacon.
   void stopBeacon() {
+    _beaconGeneration++;
     _beaconTimer?.cancel();
     _beaconTimer = null;
     _broadcastSocket?.close();
@@ -106,20 +125,34 @@ class LanDiscoveryService {
   /// Starts listening for Host beacons on the local network.
   Future<void> startListening({int discoveryPort = defaultDiscoveryPort}) async {
     stopListening();
+    final generation = _listeningGeneration;
 
     try {
-      _listenSocket = await RawDatagramSocket.bind(
+      final socket = await RawDatagramSocket.bind(
         InternetAddress.anyIPv4,
         discoveryPort,
         reuseAddress: true,
       );
-
-      _listenSocket?.listen((RawSocketEvent event) {
+      if (generation != _listeningGeneration) {
+        socket.close();
+        return;
+      }
+      _listenSocket = socket;
+      socket.listen((RawSocketEvent event) {
         if (event == RawSocketEvent.read) {
-          final datagram = _listenSocket?.receive();
+          final datagram = socket.receive();
           if (datagram != null) {
             _handleDatagram(datagram);
           }
+        }
+      });
+      // Remove hosts that stopped broadcasting (saved, ended, or offline).
+      _expiryTimer = Timer.periodic(const Duration(seconds: 3), (_) {
+        final before = _discoveredRooms.length;
+        _discoveredRooms.removeWhere((_, room) =>
+            DateTime.now().difference(room.lastSeen) > const Duration(seconds: 7));
+        if (before != _discoveredRooms.length && !_roomsController.isClosed) {
+          _roomsController.add(discoveredRooms);
         }
       });
     } catch (_) {
@@ -146,6 +179,9 @@ class LanDiscoveryService {
 
   /// Stops listening for beacons.
   void stopListening() {
+    _listeningGeneration++;
+    _expiryTimer?.cancel();
+    _expiryTimer = null;
     _listenSocket?.close();
     _listenSocket = null;
     _discoveredRooms.clear();
