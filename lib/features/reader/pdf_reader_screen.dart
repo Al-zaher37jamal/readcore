@@ -349,7 +349,12 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> with WidgetsBindingOb
         savedProgress = await _progressRepo.getLatestBookProgress(widget.book.id, _deviceId);
       }
 
-      if (savedProgress != null &&
+      final savedRoomPage = _isGroup
+          ? await _sessionRepo.getSessionPage(_activeSessionId) : null;
+      if (!mounted) return;
+      if (savedRoomPage != null && savedRoomPage.page <= _totalPages) {
+        _currentPage = savedRoomPage.page;
+      } else if (savedProgress != null &&
           savedProgress.currentPage >= 1 &&
           savedProgress.currentPage <= _totalPages) {
         _currentPage = savedProgress.currentPage;

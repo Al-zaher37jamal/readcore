@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:readmesh/core/widgets/app_icon.dart';
 import 'package:flutter/services.dart';
 import 'package:readmesh/core/di/injection.dart';
+import 'package:readmesh/core/errors/exceptions.dart';
 import 'package:readmesh/core/l10n/app_localizations.dart';
 import 'package:readmesh/data/database/app_database.dart';
 import 'package:readmesh/data/repositories/book_repository.dart';
@@ -81,6 +82,7 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
   StreamSubscription<LanConnectionState>? _participantConnSub;
   StreamSubscription<List<LanConnectedParticipant>>? _hostParticipantsSub;
   StreamSubscription<String>? _participantStatusSub;
+  Future<void> _rosterWrites = Future<void>.value();
   bool _exitApproved = false;
   bool _closingRoom = false;
   bool _exitDialogOpen = false;
@@ -148,14 +150,16 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
         if (_hostServer == null) {
           final book = await _bookRepo.getBookById(session.bookId);
           final progress = await _progressRepo?.getProgress(session.id, _currentProfile!.id);
+          final savedPage = await _roomService.getSessionPage(session.id);
           if (!mounted) return;
-          final pages = book?.pageCount ?? progress?.totalPages ?? 1;
+          final pages = book?.pageCount ?? savedPage?.totalPages ?? progress?.totalPages ?? 1;
           final total = pages > 0 ? pages : 1;
           _hostServer = LanHostServer(
             sessionId: widget.sessionId,
             hostDeviceId: _currentProfile!.id,
             hostDisplayName: _currentProfile!.displayName,
-            initialPage: (progress?.currentPage ?? 1).clamp(1, total),
+            bookSha256: book?.sha256Hash,
+            initialPage: (savedPage?.page ?? progress?.currentPage ?? 1).clamp(1, total),
             totalPages: total,
             // The fresh socket can accept joins only after SQLite is active;
             // the beacon is published below, after the DB transition.
@@ -213,9 +217,9 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
           port: _hostPort,
         ); // UDP 40405; manual IP remains available when UDP is blocked.
       }
-      _hostParticipantsSub = _hostServer!.participantsStream.listen((list) {
-        if (mounted) setState(() => _lanConnectedCount = list.length);
-      });
+      _hostParticipantsSub = _hostServer!.participantsStream.listen(_recordHostParticipants);
+      // The preflight join may already have happened before this subscription.
+      _recordHostParticipants(_hostServer!.participants);
     } else {
       if (widget.hostAddress == null && _participantClient == null) return;
       _participantClient ??= LanParticipantClient(
@@ -228,7 +232,16 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
         if (mounted) setState(() => _participantState = state);
       });
       _participantStatusSub = client.statusStream.listen(_handleParticipantStatus);
-      await _attachContentSync(session, isHost: false);
+      // RoomsScreen's TCP preflight can finish before RoomDetail subscribes.
+      // A broadcast state stream does not replay its old "connected" event.
+      if (mounted) setState(() => _participantState = client.state);
+      // On a cold resume of an older saved placeholder, the actual local PDF
+      // is not known until the Host snapshot validates its hash. Attaching the
+      // old book's sync here would consume the one-shot content catch-up on
+      // the wrong book; attach it after the saved session has been rebound.
+      if (session.status != 'saved' || client.hasSnapshot) {
+        await _attachContentSync(session, isHost: false);
+      }
       if (!mounted) return;
       if (client.hasSnapshot) _handleParticipantStatus(client.sessionStatus);
       if (widget.hostAddress != null && !client.isConnected) {
@@ -248,6 +261,21 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
         }
       }
     }
+  }
+
+  void _recordHostParticipants(List<LanConnectedParticipant> participants) {
+    if (mounted) setState(() => _lanConnectedCount = participants.length);
+    final connected = {for (final peer in participants) peer.deviceId: peer.displayName};
+    // Serialize roster writes so a quick disconnect/rejoin cannot create a
+    // second member row or let a stale disconnect win after the new JOIN.
+    _rosterWrites = _rosterWrites.catchError((_) {}).then((_) =>
+        _roomService.syncConnectedParticipants(widget.sessionId, connected));
+    unawaited(_rosterWrites.catchError((Object error) {
+      if (mounted) ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(
+        content: Text('${AppLocalizations.of(context).tr('lanSyncError')}: $error'),
+        backgroundColor: Colors.red,
+      ));
+    }));
   }
 
   Future<void> _attachContentSync(Session session, {required bool isHost}) {
@@ -300,13 +328,31 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
           totalPages: _participantClient?.totalPages,
         );
         await _roomService.leaveRoom(widget.sessionId);
-      } else if (status == 'paused') {
-        await _roomService.pauseSession(widget.sessionId);
-      } else if (status == 'active') {
-        // A returning participant had been marked 'left' when the old LAN
-        // connection was saved; the fresh Host snapshot reactivates that role.
-        await _roomService.joinRoom(sessionCode: widget.sessionId);
-        await _roomService.startSession(widget.sessionId);
+      } else if (status == 'active' || status == 'paused') {
+        // The Host's PDF is identified by content, not this phone's UUID.
+        // A saved copy linked to the wrong Library book can be repaired using
+        // the verified Host identity while retaining the session/messages.
+        try {
+          final joined = await _roomService.joinRoom(
+              sessionCode: widget.sessionId,
+              remoteHostDeviceId: _participantClient?.hostDeviceId,
+              remoteBookSha256: _participantClient?.bookSha256);
+          if (_contentSync == null) {
+            await _attachContentSync(joined, isHost: false);
+          }
+          if (_contentSync == null) {
+            throw StateError('LAN content sync could not be attached.');
+          }
+        } catch (_) {
+          await _participantClient?.disconnect();
+          if (mounted) setState(() => _participantState = LanConnectionState.disconnected);
+          rethrow;
+        }
+        if (status == 'active') {
+          await _roomService.startSession(widget.sessionId);
+        } else {
+          await _roomService.pauseSession(widget.sessionId);
+        }
       }
       if (status == 'ended' || status == 'saved') {
         await _participantClient?.disconnect();
@@ -314,8 +360,15 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
       }
     } catch (e) {
       if (mounted) {
+        final l10n = AppLocalizations.of(context);
+        final message = e is NotFoundException && e.message.contains('fingerprint unavailable')
+            ? l10n.tr('hostPdfUnverified')
+            : e is NotFoundException && e.message.contains('same PDF')
+                ? l10n.tr('sameRoomPdfRequired')
+                : e is DatabaseOperationException && e.message.contains('different PDF')
+                    ? l10n.tr('roomPdfMismatch') : '$e';
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('$e'), backgroundColor: Colors.red),
+          SnackBar(content: Text(message), backgroundColor: Colors.red),
         );
       }
     }
@@ -402,6 +455,8 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
           _discoveryService.stopBeacon();
           _hostServer?.broadcastSessionSaved();
           await _hostServer?.stop();
+          _recordHostParticipants(const <LanConnectedParticipant>[]);
+          await _rosterWrites;
         } else {
           final saved = await _roomService.saveAndLeaveSession(
             widget.sessionId,
@@ -547,6 +602,9 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
   Widget _buildSessionCodeCard(Session session) {
     final l10n = AppLocalizations.of(context);
     final isHost = _currentProfile != null && session.hostDeviceId == _currentProfile!.id;
+    final lanState = _participantState == LanConnectionState.connected &&
+            _participantClient?.isJoined == false
+        ? LanConnectionState.connecting : _participantState;
     final hostEndpoint = _hostServer?.isRunning == true &&
             session.status != 'saved' && session.status != 'ended' &&
             _hostDisplayIp.isNotEmpty && !LanIpHelper.isLoopback(_hostDisplayIp)
@@ -678,16 +736,16 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
                 children: [
                   Row(
                     children: [
-                      AppIcon.dot(size: 10, color: _participantState == LanConnectionState.connected
+                      AppIcon.dot(size: 10, color: lanState == LanConnectionState.connected
                             ? const Color(0xFF10B981)
-                            : _participantState == LanConnectionState.connecting ||
-                                    _participantState == LanConnectionState.reconnecting
+                            : lanState == LanConnectionState.connecting ||
+                                    lanState == LanConnectionState.reconnecting
                                 ? const Color(0xFFF59E0B)
                                 : const Color(0xFFEF4444),
                       ),
                       const SizedBox(width: 6),
                       Text(
-                        '${l10n.lan}: ${_participantState == LanConnectionState.connected ? l10n.connected : _participantState == LanConnectionState.connecting ? l10n.connecting : _participantState == LanConnectionState.reconnecting ? l10n.reconnecting : l10n.disconnected}',
+                        '${l10n.lan}: ${lanState == LanConnectionState.connected ? l10n.connected : lanState == LanConnectionState.connecting ? l10n.connecting : lanState == LanConnectionState.reconnecting ? l10n.reconnecting : l10n.disconnected}',
                         key: const Key('lan_connection_status_display'),
                         style: const TextStyle(
                           fontSize: 12,
@@ -908,7 +966,9 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
                   width: double.infinity,
                   child: ElevatedButton.icon(
                     key: const Key('open_room_book_button'),
-                    onPressed: !canRead
+                    onPressed: !canRead || (!isHost &&
+                            _participantClient?.bookSha256 != null &&
+                            _participantClient!.bookSha256 != book.sha256Hash)
                         ? null
                         : () async {
                             try {

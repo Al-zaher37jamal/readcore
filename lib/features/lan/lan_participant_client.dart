@@ -19,6 +19,8 @@ class LanParticipantClient {
   // Authoritative state received from the Host
   int _currentPage = 1;
   int _totalPages = 1;
+  String? _bookSha256;
+  String? _hostDeviceId;
   String _sessionStatus = 'created';
   bool _hasSnapshot = false;
   bool _hasJoinAck = false;
@@ -53,6 +55,8 @@ class LanParticipantClient {
   bool get isConnected => _state == LanConnectionState.connected;
   int get currentPage => _currentPage;
   int get totalPages => _totalPages;
+  String? get bookSha256 => _bookSha256;
+  String? get hostDeviceId => _hostDeviceId;
   String get sessionStatus => _sessionStatus;
   bool get hasSnapshot => _hasSnapshot;
   bool get hasJoinAck => _hasJoinAck;
@@ -78,6 +82,8 @@ class LanParticipantClient {
     _intentionallyDisconnected = false;
     _hasSnapshot = false;
     _hasJoinAck = false;
+    _bookSha256 = null;
+    _hostDeviceId = null;
 
     _updateState(LanConnectionState.connecting);
 
@@ -156,6 +162,9 @@ class LanParticipantClient {
       switch (msg.type) {
         case LanMessageType.stateSnapshot:
           _hasSnapshot = true;
+          final digest = msg.payload?['bookSha256'];
+          _bookSha256 = digest is String ? digest : null;
+          _hostDeviceId = msg.senderDeviceId;
           if (msg.totalPages != null) {
             _totalPages = msg.totalPages!;
           }
@@ -229,6 +238,8 @@ class LanParticipantClient {
     }
     _cleanupSocket();
     _hasSnapshot = false;
+    _bookSha256 = null;
+    _hostDeviceId = null;
 
     if (_state != LanConnectionState.disconnected) {
       _updateState(LanConnectionState.disconnected);
@@ -260,6 +271,8 @@ class LanParticipantClient {
     _intentionallyDisconnected = false;
     _hasSnapshot = false;
     _hasJoinAck = false;
+    _bookSha256 = null;
+    _hostDeviceId = null;
 
     _updateState(LanConnectionState.reconnecting);
 
@@ -309,6 +322,8 @@ class LanParticipantClient {
     _connectionGeneration++; // Ignore a Socket.connect that finishes after Leave.
     _hasSnapshot = false;
     _hasJoinAck = false;
+    _bookSha256 = null;
+    _hostDeviceId = null;
     _reconnectTimer?.cancel();
 
     if (_socket != null && _state == LanConnectionState.connected) {

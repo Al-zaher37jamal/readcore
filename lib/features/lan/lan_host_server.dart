@@ -35,6 +35,9 @@ class LanHostServer {
   final String sessionId;
   final String hostDeviceId;
   final String hostDisplayName;
+  /// The same PDF has a different book ID on each device; advertise its hash
+  /// in the existing join snapshot so the peer opens its own matching import.
+  final String? bookSha256;
   final int requestedPort;
 
   ServerSocket? _serverSocket;
@@ -65,6 +68,7 @@ class LanHostServer {
     required this.sessionId,
     required this.hostDeviceId,
     required this.hostDisplayName,
+    this.bookSha256,
     int? initialPage,
     int? totalPages,
     String? sessionStatus,
@@ -246,6 +250,7 @@ class LanHostServer {
         totalPages: _totalPages,
         sessionStatus: _sessionStatus,
         participants: _clients.values.map((p) => p.toJson()).toList(),
+        bookSha256: bookSha256,
       ),
     );
   }

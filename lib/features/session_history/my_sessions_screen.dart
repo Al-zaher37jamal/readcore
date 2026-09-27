@@ -1,11 +1,9 @@
 import 'dart:async';
 import 'dart:io';
-import 'package:drift/drift.dart' show Variable;
 import 'package:flutter/material.dart';
 import 'package:readmesh/core/di/injection.dart';
 import 'package:readmesh/core/l10n/app_localizations.dart';
 import 'package:readmesh/core/widgets/app_icon.dart';
-import 'package:readmesh/data/database/app_database.dart';
 import 'package:readmesh/data/repositories/book_repository.dart';
 import 'package:readmesh/data/repositories/reading_progress_repository.dart';
 import 'package:readmesh/data/repositories/session_repository.dart';
@@ -75,21 +73,13 @@ class _MySessionsScreenState extends State<MySessionsScreen> {
     int currentPage = progress?.currentPage ?? 1;
     int totalPages = progress?.totalPages ?? book?.pageCount ?? 1;
 
-    // Try to get from sessions table new columns via raw query
-    try {
-      final db = getIt<AppDatabase>();
-      final rows = await db.customSelect(
-        'SELECT last_page, total_pages FROM sessions WHERE id = ?',
-        variables: [Variable.withString(session.id)],
-      ).get();
-      if (rows.isNotEmpty) {
-        final data = rows.first.data;
-        final lp = data['last_page'] as int?;
-        final tp = data['total_pages'] as int?;
-        if (lp != null && lp > 0) currentPage = lp;
-        if (tp != null && tp > 0) totalPages = tp;
-      }
-    } catch (_) {}
+    // Read the same durable room page used when rehosting. Do not silently
+    // fall back to page 1 because an unrelated GetIt database was unavailable.
+    final savedPage = await _sessionRepo.getSessionPage(session.id);
+    if (savedPage != null) {
+      currentPage = savedPage.page;
+      totalPages = savedPage.totalPages;
+    }
 
     return {
       'book': book,
@@ -152,12 +142,16 @@ class _MySessionsScreenState extends State<MySessionsScreen> {
     try {
       final book = await _bookRepo.getBookById(session.bookId);
       if (book == null) throw StateError(l10n.roomNotFound);
-      if (!await File(book.filePath).exists()) {
-        throw StateError('PDF file not found: ${book.filePath}');
-      }
       final profile = await _deviceService.getOrCreateCurrentProfile();
       if (!mounted) return;
       final isGroup = !session.id.startsWith('solo_');
+      // A participant's older saved room may point to an unrelated/deleted
+      // PDF chosen by the previous join flow. Revalidate the matching local
+      // import against the live Host snapshot before opening its Reader.
+      if (!(isGroup && session.hostDeviceId != profile.id) &&
+          !await File(book.filePath).exists()) {
+        throw StateError('PDF file not found: ${book.filePath}');
+      }
 
       if (isGroup && session.hostDeviceId != profile.id) {
         // Resolve the same room code via a *fresh* UDP advertisement when the

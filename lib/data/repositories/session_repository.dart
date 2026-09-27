@@ -25,6 +25,10 @@ abstract class SessionRepository {
   Future<bool> saveAndLeaveSession(String id, {int? lastPage, int? totalPages});
   Future<bool> endReadingSession(String id);
   Future<bool> updateSessionLastPage(String id, int currentPage, int totalPages);
+  /// The persisted group page is independent of this device's reading progress.
+  Future<({int page, int totalPages})?> getSessionPage(String id);
+  /// Repair an older saved room that was linked to an arbitrary local PDF.
+  Future<bool> rebindSavedSessionBook(String id, String bookId);
   Future<bool> deleteSessionHistoryOnly(String id);
   Future<bool> updateSessionFlags(String id, {bool? timerEnabled, bool? statsEnabled});
   Future<Map<String, dynamic>?> getSessionFlags(String id);
@@ -116,13 +120,13 @@ UPDATE sessions SET status = 'saved',
   last_activity_at = COALESCE(last_activity_at, updated_at)
 WHERE status IN ('active', 'paused', 'created')
 ''', updates: {_db.sessionsTable});
-    if (count > 0) {
-      await _db.customUpdate('''
+    // Also clear stale TCP presence after a graceful Save: the session was
+    // already 'saved' before this cold launch, so count can be zero.
+    await _db.customUpdate('''
 UPDATE session_members SET status = 'disconnected'
 WHERE status = 'active' AND session_id IN
   (SELECT id FROM sessions WHERE status = 'saved')
 ''', updates: {_db.sessionMembersTable});
-    }
     return count;
   });
 
@@ -224,6 +228,46 @@ WHERE status = 'active' AND session_id IN
       return count > 0;
     });
   }
+
+  @override
+  Future<({int page, int totalPages})?> getSessionPage(String id) async {
+    // These migration columns are not yet in the checked-in Drift data class.
+    // Read the durable room page directly rather than falling back to page 1
+    // when this device has no reading_progress row (e.g. after Save & Leave).
+    final row = await _db.customSelect(
+      'SELECT last_page, total_pages FROM sessions WHERE id = ?',
+      variables: [Variable.withString(id)],
+    ).getSingleOrNull();
+    final page = row?.data['last_page'] as int?;
+    if (page == null || page < 1) return null;
+    final total = row?.data['total_pages'] as int?;
+    return (page: page, totalPages: total != null && total >= page ? total : page);
+  }
+
+  @override
+  Future<bool> rebindSavedSessionBook(String id, String bookId) =>
+      _db.writeTx(() async {
+        // Only repair a saved copy of the *same Host's* room, after the caller
+        // verified its PDF hash. Preserve session/member/message IDs and move
+        // per-session progress/annotations with the corrected local book ID.
+        final changed = await _db.customUpdate(
+          "UPDATE sessions SET book_id = ? WHERE id = ? AND status = 'saved'",
+          variables: [Variable.withString(bookId), Variable.withString(id)],
+          updates: {_db.sessionsTable},
+        );
+        if (changed == 0) return false;
+        await _db.customUpdate(
+          'UPDATE reading_progress SET book_id = ? WHERE session_id = ?',
+          variables: [Variable.withString(bookId), Variable.withString(id)],
+          updates: {_db.readingProgressTable},
+        );
+        await _db.customUpdate(
+          'UPDATE notes SET book_id = ? WHERE session_id = ?',
+          variables: [Variable.withString(bookId), Variable.withString(id)],
+          updates: {_db.notesTable},
+        );
+        return true;
+      });
 
   @override
   Future<bool> deleteSessionHistoryOnly(String id) {

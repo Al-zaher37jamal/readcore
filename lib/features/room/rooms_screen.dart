@@ -384,6 +384,7 @@ class _RoomsScreenState extends State<RoomsScreen> {
           sessionCode: normalizedCode,
           remoteTitle: match.isEmpty ? null : match.first.title,
           remoteHostDeviceId: initial.senderDeviceId,
+          remoteBookSha256: client.bookSha256,
         );
         // A placeholder defaults to active, but a newly created or paused
         // Host room must display its authoritative state on the second phone.
@@ -410,7 +411,13 @@ class _RoomsScreenState extends State<RoomsScreen> {
     } catch (e) {
       if (!mounted) return;
       String friendlyMessage;
-      if (e is NotFoundException) {
+      if (e is NotFoundException && e.message.contains('fingerprint unavailable')) {
+        friendlyMessage = l10n.tr('hostPdfUnverified');
+      } else if (e is NotFoundException && e.message.contains('same PDF')) {
+        friendlyMessage = l10n.tr('sameRoomPdfRequired');
+      } else if (e is DatabaseOperationException && e.message.contains('different PDF')) {
+        friendlyMessage = l10n.tr('roomPdfMismatch');
+      } else if (e is NotFoundException) {
         friendlyMessage = l10n.roomNotFound;
       } else if (e is DatabaseOperationException && e.message.contains('ended')) {
         friendlyMessage = l10n.cannotJoinEnded;

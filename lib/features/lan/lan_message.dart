@@ -108,6 +108,7 @@ class LanMessage {
     required int totalPages,
     required String sessionStatus,
     List<Map<String, dynamic>>? participants,
+    String? bookSha256,
   }) {
     return LanMessage(
       type: LanMessageType.stateSnapshot,
@@ -116,7 +117,10 @@ class LanMessage {
       currentPage: currentPage,
       totalPages: totalPages,
       sessionStatus: sessionStatus,
-      payload: participants != null ? {'participants': participants} : null,
+      payload: participants != null || bookSha256 != null ? {
+        if (participants != null) 'participants': participants,
+        if (bookSha256 != null) 'bookSha256': bookSha256,
+      } : null,
     );
   }
 
