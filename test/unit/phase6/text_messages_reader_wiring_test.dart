@@ -244,8 +244,13 @@ void main() {
       await waitForDatabase(tester);
       expect(find.byType(PdfReaderScreen), findsOneWidget);
       expectInlineMessages(tester);
-      expect(tester.widget<TextMessagesPanel>(find.byType(TextMessagesPanel))
-        .sessionId, sessionId);
+      final reader = tester.widget<PdfReaderScreen>(find.byType(PdfReaderScreen));
+      final panel = tester.widget<TextMessagesPanel>(find.byType(TextMessagesPanel));
+      expect(reader.contentSync, isNotNull,
+          reason: 'RoomDetail must attach the single room sync before navigation');
+      expect(panel.sessionId, sessionId);
+      expect(panel.publishCommittedText, isNotNull,
+          reason: 'The inline group composer must publish its committed rows');
     } finally {
       await tester.pumpWidget(const SizedBox.shrink());
       discovery.dispose();

@@ -35,7 +35,8 @@ void main() {
     await tester.pumpAndSettle();
   }
 
-  Widget app(int page, {Widget? pdf}) => MaterialApp(
+  Widget app(int page, {Widget? pdf,
+      Future<bool> Function(TextMessage)? publishCommittedText}) => MaterialApp(
     locale: const Locale('ar'),
     supportedLocales: const [Locale('ar'), Locale('en')],
     localizationsDelegates: const [
@@ -50,6 +51,7 @@ void main() {
         sessionId: 'solo_book-ui', pageNumber: page,
         senderId: 'dev-a', senderName: 'أحمد', canSend: true,
         controller: controller,
+        publishCommittedText: publishCommittedText,
       )),
     ])),
   );
@@ -113,6 +115,28 @@ void main() {
     await tester.pumpWidget(app(8)); // panel disposed and created again
     await settleSqlite(tester);
     expect(find.text('السلام عليكم'), findsOneWidget);
+  });
+
+  testWidgets('offline LAN return keeps the committed ID and explains the delay',
+      (tester) async {
+    var publishes = 0;
+    await tester.pumpWidget(app(8, publishCommittedText: (row) async {
+      publishes++;
+      expect(row.sessionId, 'solo_book-ui');
+      expect(row.pageNumber, 8);
+      return false;
+    }));
+    await settleSqlite(tester);
+    await tester.enterText(find.byKey(const Key('text_message_input')),
+        'حُفظ قبل الشبكة');
+    await tester.tap(find.byKey(const Key('send_text_message_button')));
+    await settleSqlite(tester);
+    expect(publishes, 1);
+    expect((await messages.getPageText('solo_book-ui', 8)), hasLength(1));
+    expect(find.text('حُفظ قبل الشبكة'), findsOneWidget);
+    expect(find.textContaining('اتصال الغرفة بالشبكة المحلية غير جاهز'),
+        findsOneWidget);
+    expect(find.textContaining('حُفظ محليًا'), findsOneWidget);
   });
 
   testWidgets('loading, error and retry keep inline composer visible',

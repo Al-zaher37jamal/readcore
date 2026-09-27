@@ -16,6 +16,7 @@ import 'package:readmesh/data/repositories/reading_progress_repository.dart';
 import 'package:readmesh/data/repositories/session_event_repository.dart';
 import 'package:readmesh/data/repositories/session_member_repository.dart';
 import 'package:readmesh/data/repositories/session_repository.dart';
+import 'package:readmesh/data/repositories/session_reading_timer_repository.dart';
 import 'package:readmesh/data/repositories/session_content_repository.dart';
 import 'package:readmesh/data/storage/session_voice_store.dart';
 import 'package:readmesh/data/storage/book_file_manager.dart';
@@ -89,6 +90,8 @@ Future<void> setupLocator({
   getIt.registerSingleton<BookRepository>(bookRepo);
   getIt.registerSingleton<DeviceProfileRepository>(deviceProfileRepo);
   getIt.registerSingleton<SessionRepository>(sessionRepo);
+  getIt.registerSingleton<SessionReadingTimerRepository>(
+      SessionReadingTimerRepositoryImpl(database));
   getIt.registerSingleton<SessionContentRepository>(SessionContentRepository(database));
   getIt.registerSingleton<SessionMemberRepository>(sessionMemberRepo);
   getIt.registerSingleton<SessionEventRepository>(sessionEventRepo);

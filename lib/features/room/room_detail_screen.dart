@@ -77,6 +77,7 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
   LanHostServer? _hostServer;
   LanParticipantClient? _participantClient;
   SessionContentSync? _contentSync;
+  Future<void>? _attachingContentSync;
   StreamSubscription<LanConnectionState>? _participantConnSub;
   StreamSubscription<List<LanConnectedParticipant>>? _hostParticipantsSub;
   StreamSubscription<String>? _participantStatusSub;
@@ -249,14 +250,30 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
     }
   }
 
-  Future<void> _attachContentSync(Session session, {required bool isHost}) async {
-    if (_contentSync != null) return;
+  Future<void> _attachContentSync(Session session, {required bool isHost}) {
+    if (_contentSync != null) return Future<void>.value();
+    // Reading may be opened while the async room initialization is still
+    // loading the book. Share that in-flight attachment so neither route
+    // creates a second listener on the same TCP connection.
+    return _attachingContentSync ??= _createContentSync(session, isHost: isHost)
+        .whenComplete(() { _attachingContentSync = null; });
+  }
+
+  Future<void> _createContentSync(Session session, {required bool isHost}) async {
     final content = widget.contentRepository ??
         (getIt.isRegistered<SessionContentRepository>()
             ? getIt<SessionContentRepository>() : null);
     final files = widget.voiceStore ??
         (getIt.isRegistered<SessionVoiceStore>() ? getIt<SessionVoiceStore>() : null);
-    if (content == null || files == null) return;
+    if (content == null || files == null) {
+      if (mounted) {
+        ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(
+          content: Text(AppLocalizations.of(context).tr('lanSyncUnavailable')),
+          backgroundColor: Colors.red,
+        ));
+      }
+      return;
+    }
     final book = await _bookRepo.getBookById(session.bookId);
     if (!mounted || _currentProfile == null) return;
     _contentSync = SessionContentSync(
@@ -893,10 +910,14 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
                     key: const Key('open_room_book_button'),
                     onPressed: !canRead
                         ? null
-                        : () {
-                            Navigator.push(
-                              context,
-                              MaterialPageRoute(
+                        : () async {
+                            try {
+                              // Room initialization may still be attaching the
+                              // bridge. Never open a Reader with a second sync
+                              // on the very same socket.
+                              await _attachContentSync(session, isHost: isHost);
+                              if (!mounted || _contentSync == null) return;
+                              await Navigator.push(context, MaterialPageRoute(
                                 builder: (_) => PdfReaderScreen(
                                   book: book,
                                   sessionId: session.id,
@@ -906,8 +927,15 @@ class _RoomDetailScreenState extends State<RoomDetailScreen> {
                                   contentSync: _contentSync,
                                   onLanSessionClosed: _discoveryService.stopBeacon,
                                 ),
-                              ),
-                            );
+                              ));
+                            } catch (error) {
+                              if (mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                                  content: Text('${l10n.tr('lanSyncError')}: $error'),
+                                  backgroundColor: Colors.red,
+                                ));
+                              }
+                            }
                           },
                     icon: AppIcon.book(),
                     label: Text(isHost ? l10n.readAsHost : l10n.readAsParticipant),

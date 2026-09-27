@@ -11,6 +11,7 @@ import 'package:readmesh/features/audio_messages/domain/audio_message.dart';
 import 'package:readmesh/features/audio_messages/presentation/audio_clip_player.dart';
 import 'package:readmesh/core/di/injection.dart';
 import 'package:readmesh/core/l10n/app_localizations.dart';
+import 'package:readmesh/core/theme/app_theme.dart';
 import 'package:readmesh/data/repositories/message_repository.dart';
 import 'package:readmesh/features/text_messages/domain/text_message.dart';
 import 'text_messages_controller.dart';
@@ -24,14 +25,17 @@ class TextMessagesPanel extends StatefulWidget {
   final String senderName;
   final bool canSend;
   final TextMessagesController? controller;
+  /// Optional LAN publisher. Called only after the local text row commits;
+  /// both local and remote views continue to watch SQLite, not the socket.
+  final Future<bool> Function(TextMessage)? publishCommittedText;
   final AudioMessageRepository? audioRepository;
   final LocalAudioService? audioService;
   final SessionVoiceStore? voiceStore;
 
   const TextMessagesPanel({super.key, required this.sessionId,
     required this.pageNumber, required this.senderId, required this.senderName,
-    required this.canSend, this.controller, this.audioRepository,
-    this.audioService, this.voiceStore});
+    required this.canSend, this.controller, this.publishCommittedText,
+    this.audioRepository, this.audioService, this.voiceStore});
 
   @override
   State<TextMessagesPanel> createState() => _TextMessagesPanelState();
@@ -229,10 +233,13 @@ class _TextMessagesPanelState extends State<TextMessagesPanel> {
     super.dispose();
   }
 
-  void _error(Object error) {
+  void _error(Object error, {bool lan = false}) {
     if (!mounted) return;
+    final l10n = AppLocalizations.of(context);
+    final suffix = lan ? ' — ${l10n.tr('offlineSaved')}' : '';
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text('${AppLocalizations.of(context).tr('textMessageError')}: $error'),
+      content: Text('${l10n.tr(lan ? 'lanSyncError' : 'textMessageError')}: '
+          '$error$suffix'),
       backgroundColor: Colors.red,
     ));
   }
@@ -255,15 +262,33 @@ class _TextMessagesPanelState extends State<TextMessagesPanel> {
     // cannot misattribute a message to the newly visible page.
     final page = widget.pageNumber;
     final text = _draft.text;
+    final publish = widget.publishCommittedText;
     setState(() => _busy = true);
     try {
-      await controller.send(page, text);
-      if (!mounted) return;
-      if (_pageDrafts[page] == text) _pageDrafts.remove(page);
-      if (widget.pageNumber == page && _draft.text == text) _draft.clear();
-      _toNewest();
+      final committed = await controller.send(page, text);
+      // A disposed/page-switched panel may still finish its insert. Publish
+      // that committed row with its original page and ID, not the new page.
+      if (mounted) {
+        if (_pageDrafts[page] == text) _pageDrafts.remove(page);
+        if (widget.pageNumber == page && _draft.text == text) _draft.clear();
+        _toNewest();
+      }
+      if (publish != null) {
+        try {
+          if (!await publish(committed)) {
+            // A false result means the transport was not joined/available.
+            // The row is still committed for the existing reconnect replay.
+            if (mounted) _error(AppLocalizations.of(context).tr('lanNotConnected'),
+                lan: true);
+          }
+        } catch (error) {
+          // The DB write already succeeded: never offer the old draft as an
+          // unsent message to retry under a new ID. Replay uses the saved ID.
+          _error(error, lan: true);
+        }
+      }
     } catch (error) {
-      _error(error); // Keep the unsent draft for retry.
+      _error(error); // SQLite failed; keep the unsent draft for retry.
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -546,10 +571,10 @@ class _TextMessagesPanelState extends State<TextMessagesPanel> {
     return Card(
       key: Key('text_message_${message.id}'),
       margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 3),
-      color: mine ? const Color(0xFFEFF6FF) : Colors.white,
+      color: mine ? AppTheme.softSky : Colors.white,
       elevation: 0,
       shape: RoundedRectangleBorder(
-        side: const BorderSide(color: Color(0xFFE2E8F0)),
+        side: const BorderSide(color: AppTheme.borderColor),
         borderRadius: BorderRadius.circular(10),
       ),
       child: Padding(
@@ -559,7 +584,7 @@ class _TextMessagesPanelState extends State<TextMessagesPanel> {
             Expanded(child: Text(message.senderName,
               maxLines: 1, overflow: TextOverflow.ellipsis,
               style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold,
-                  color: Color(0xFF2563EB)))),
+                  color: AppTheme.primaryColor))),
             if (mine && widget.canSend) ...[
               IconButton(key: Key('edit_message_${message.id}'),
                 icon: const Icon(Icons.edit_outlined, size: 18),
@@ -589,10 +614,12 @@ class _TextMessagesPanelState extends State<TextMessagesPanel> {
                   onPressed: () => setState(() => _editingId = null)),
             ])
           else
-            Text(message.text, key: Key('message_body_${message.id}')),
+            Text(message.text, key: Key('message_body_${message.id}'),
+              style: const TextStyle(color: AppTheme.textPrimaryColor,
+                  fontSize: 14, height: 1.4)),
           Align(alignment: AlignmentDirectional.centerEnd,
             child: Text(timeLabel,
-              style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)))),
+              style: const TextStyle(fontSize: 11, color: AppTheme.textSecondaryColor))),
         ]),
       ),
     );
@@ -606,10 +633,10 @@ class _TextMessagesPanelState extends State<TextMessagesPanel> {
     return Card(
       key: Key('audio_message_${message.id}'),
       margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 3),
-      color: mine ? const Color(0xFFEFF6FF) : Colors.white,
+      color: mine ? AppTheme.softSky : Colors.white,
       elevation: 0,
       shape: RoundedRectangleBorder(
-        side: const BorderSide(color: Color(0xFFE2E8F0)),
+        side: const BorderSide(color: AppTheme.borderColor),
         borderRadius: BorderRadius.circular(10),
       ),
       child: Padding(padding: const EdgeInsets.fromLTRB(12, 6, 12, 5),
@@ -619,7 +646,7 @@ class _TextMessagesPanelState extends State<TextMessagesPanel> {
                 ? l10n.tr('audioLocalReader') : message.senderDisplayName,
               maxLines: 1, overflow: TextOverflow.ellipsis,
               style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold,
-                  color: Color(0xFF2563EB)))),
+                  color: AppTheme.primaryColor))),
             if (mine && widget.canSend) ...[
               IconButton(key: Key('replace_audio_${message.id}'),
                 icon: const Icon(Icons.mic_none, size: 18),
@@ -641,7 +668,7 @@ class _TextMessagesPanelState extends State<TextMessagesPanel> {
             audio: _audioService, onError: _audioError),
           Align(alignment: AlignmentDirectional.centerEnd,
             child: Text(timeLabel, style: const TextStyle(
-              fontSize: 11, color: Color(0xFF64748B)))),
+              fontSize: 11, color: AppTheme.textSecondaryColor))),
         ]),
       ),
     );
@@ -739,8 +766,18 @@ class _TextMessagesPanelState extends State<TextMessagesPanel> {
             onSubmitted: (_) => _send(),
             decoration: InputDecoration(
               hintText: l10n.tr('textMessageHint'), counterText: '',
-              isDense: true, filled: true, fillColor: Colors.white,
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(24)),
+              isDense: true, filled: true, fillColor: AppTheme.surfaceColor,
+              hintStyle: const TextStyle(color: AppTheme.textSecondaryColor),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(24),
+                borderSide: const BorderSide(color: AppTheme.inputBorderColor)),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(24),
+                borderSide: const BorderSide(color: AppTheme.inputBorderColor)),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(24),
+                borderSide: const BorderSide(color: AppTheme.primaryColor,
+                    width: 1.5)),
             ),
           )),
           IconButton(key: const Key('send_text_message_button'),
@@ -749,7 +786,7 @@ class _TextMessagesPanelState extends State<TextMessagesPanel> {
             tooltip: _draft.text.trim().isEmpty
                 ? l10n.tr(_canRecord ? 'audioRecord' : 'voicePlaceholder')
                 : l10n.tr('sendMessage'),
-            color: const Color(0xFF2563EB),
+            color: AppTheme.primaryColor,
             onPressed: _draft.text.trim().isEmpty
                 ? (_canRecord ? () => _startRecording() : null)
                 : (_controller != null && widget.canSend && !_busy &&
@@ -764,8 +801,8 @@ class _TextMessagesPanelState extends State<TextMessagesPanel> {
     final l10n = AppLocalizations.of(context);
     return Container(
       key: const Key('text_messages_panel'),
-      decoration: const BoxDecoration(color: Color(0xFFF8FAFC),
-        border: Border(top: BorderSide(color: Color(0xFFCBD5E1)))),
+      decoration: const BoxDecoration(color: AppTheme.softSky,
+        border: Border(top: BorderSide(color: AppTheme.borderColor))),
       child: LayoutBuilder(builder: (context, panelConstraints) =>
         StreamBuilder<List<TextMessage>>(
           key: ValueKey('messages_${widget.sessionId}_${widget.pageNumber}_$_streamRevision'),
@@ -808,22 +845,33 @@ class _TextMessagesPanelState extends State<TextMessagesPanel> {
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
                   child: Row(children: [
-                    const Icon(Icons.chat_bubble_outline, size: 19,
-                      color: Color(0xFF2563EB)),
+                    Flexible(flex: 2, child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                      decoration: BoxDecoration(color: AppTheme.softBlue,
+                        borderRadius: BorderRadius.circular(10)),
+                      child: Row(mainAxisSize: MainAxisSize.min, children: [
+                        const Icon(Icons.chat_bubble_outline, size: 18,
+                          color: AppTheme.primaryColor),
+                        const SizedBox(width: 6),
+                        Flexible(child: Text(l10n.tr(_audioService == null
+                            ? 'textMessagesTitle' : 'discussionTab'),
+                          key: const Key('text_messages_header'),
+                          maxLines: 1, overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(color: AppTheme.primaryColor,
+                              fontWeight: FontWeight.w600))),
+                        const SizedBox(width: 6),
+                        Text('${ordered.length}',
+                          key: const Key('text_message_count'),
+                          style: const TextStyle(fontSize: 12,
+                              color: AppTheme.primaryColor,
+                              fontWeight: FontWeight.bold)),
+                      ]),
+                    )),
                     const SizedBox(width: 8),
-                    Flexible(flex: 2, child: Text(l10n.tr(_audioService == null
-                        ? 'textMessagesTitle' : 'discussionTab'),
-                      key: const Key('text_messages_header'),
-                      maxLines: 1, overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontWeight: FontWeight.bold))),
-                    const SizedBox(width: 8),
-                    Text('${ordered.length}', key: const Key('text_message_count'),
-                      style: const TextStyle(fontSize: 12, color: Color(0xFF2563EB),
-                        fontWeight: FontWeight.bold)),
-                    const Spacer(),
                     Flexible(child: Text(l10n.tr('textMessagesLocal'),
                       maxLines: 1, overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontSize: 11, color: Color(0xFF64748B)))),
+                      style: const TextStyle(fontSize: 11,
+                          color: AppTheme.textSecondaryColor))),
                   ]),
                 ),
                 Expanded(child: textSnapshot.hasError || audioSnapshot.hasError
@@ -843,7 +891,7 @@ class _TextMessagesPanelState extends State<TextMessagesPanel> {
                         key: Key('text_message_loading')))
                     : ordered.isEmpty
                       ? Center(child: Text(l10n.tr('noPageMessages'),
-                          style: const TextStyle(color: Color(0xFF64748B))))
+                          style: const TextStyle(color: AppTheme.textSecondaryColor)))
                       : ListView.builder(
                         key: const Key('text_message_list'),
                         controller: _scroll,
@@ -863,8 +911,11 @@ class _TextMessagesPanelState extends State<TextMessagesPanel> {
                   key: const Key('discussion_composer'),
                   constraints: BoxConstraints(
                       maxHeight: panelConstraints.maxHeight * 0.7),
-                  child: SingleChildScrollView(
-                    child: _composer(l10n),
+                  child: DecoratedBox(
+                    decoration: const BoxDecoration(color: AppTheme.surfaceColor,
+                        border: Border(top: BorderSide(
+                            color: AppTheme.borderColor))),
+                    child: SingleChildScrollView(child: _composer(l10n)),
                   ),
                 ),
               ]);

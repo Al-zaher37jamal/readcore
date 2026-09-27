@@ -2,7 +2,7 @@ import 'package:drift/drift.dart';
 import 'package:readmesh/core/errors/exceptions.dart';
 
 class SchemaMigrations {
-  static const int currentSchemaVersion = 5;
+  static const int currentSchemaVersion = 6;
 
   /// Builds the Drift migration strategy with startup integrity checks,
   /// WAL configuration, foreign key enforcement, and version upgrades.
@@ -20,6 +20,7 @@ class SchemaMigrations {
         await _createVersion3Indexes(db);
         await _migrateToVersion4(db);
         await _migrateToVersion5(db);
+        await _migrateToVersion6(db);
       },
       onUpgrade: (Migrator m, int from, int to) async {
         if (from < 2) {
@@ -38,6 +39,9 @@ class SchemaMigrations {
         }
         if (from < 5) {
           await _migrateToVersion5(db);
+        }
+        if (from < 6) {
+          await _migrateToVersion6(db);
         }
       },
       beforeOpen: (OpeningDetails details) async {
@@ -184,6 +188,21 @@ class SchemaMigrations {
     await db.customStatement('CREATE INDEX IF NOT EXISTS '
         'idx_messages_session_page_created '
         'ON messages(session_id, page_number, created_at)');
+  }
+
+  /// The countdown belongs to the session (not to a participant or a page).
+  /// Existing Session/Drift inserts keep working because only nullable columns
+  /// and one defaulted status are added. No message, PDF or progress migration.
+  static Future<void> _migrateToVersion6(GeneratedDatabase db) async {
+    await _addColumn(db, 'sessions', 'reading_duration_minutes',
+        'INTEGER CHECK (reading_duration_minutes BETWEEN 1 AND 1440)');
+    await _addColumn(db, 'sessions', 'reading_started_at', 'INTEGER');
+    await _addColumn(db, 'sessions', 'reading_ends_at', 'INTEGER');
+    await _addColumn(db, 'sessions', 'reading_configured_by_leader_id', 'TEXT');
+    await _addColumn(db, 'sessions', 'reading_timer_status',
+        "TEXT NOT NULL DEFAULT 'not_configured' "
+        "CHECK (reading_timer_status IN ('not_configured', 'configured', "
+        "'running', 'finished'))");
   }
 
   static Future<void> _addColumn(GeneratedDatabase db, String table,

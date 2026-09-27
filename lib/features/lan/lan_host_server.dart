@@ -48,6 +48,9 @@ class LanHostServer {
 
   // Active connected client sockets mapped by socket
   final Map<Socket, LanConnectedParticipant> _clients = {};
+  // Only one explicit content catch-up per joined socket; a reconnect gets a
+  // fresh socket. This prevents a peer repeatedly requesting full backlogs.
+  final Set<Socket> _backlogRequestedSockets = {};
 
   final StreamController<LanMessage> _messageController =
       StreamController<LanMessage>.broadcast();
@@ -159,7 +162,12 @@ class LanHostServer {
     if (line.length > 65536) return; // bounded Phase 6 voice chunks
     try {
       final msg = LanMessage.deserialize(line);
-      if (msg.sessionId != sessionId) return;
+      if (msg.sessionId != sessionId) {
+        // A wrong-room JOIN must reject the socket, not strand the client in
+        // "connected" with no ACK/snapshot. Keep ignoring stray non-JOIN data.
+        if (msg.type == LanMessageType.join) _disconnectClient(clientSocket);
+        return;
+      }
       // Only a successfully joined socket may publish content/progress. The
       // claimed author must match that socket's joined device identity.
       if (msg.type != LanMessageType.join &&
@@ -272,6 +280,28 @@ class LanHostServer {
   bool hasParticipant(String deviceId) =>
       _clients.values.any((member) => member.deviceId == deviceId);
 
+  /// Claim a single catch-up per joined socket. Only the content subscriber
+  /// calls this after receiving a validated request; a request sent before
+  /// the subscriber existed remains unclaimed for its later attachment.
+  bool claimContentBacklog(String deviceId) {
+    for (final entry in _clients.entries) {
+      if (entry.value.deviceId == deviceId) {
+        return _backlogRequestedSockets.add(entry.key);
+      }
+    }
+    return false;
+  }
+
+  /// The Host sync may attach after a peer joined. Send the initial backlog
+  /// to those peers, but do NOT claim their explicit catch-up request: the
+  /// initial packets can arrive before the peer attaches its content listener
+  /// (RoomsScreen's preflight has only a snapshot listener). That later request
+  /// must still be allowed once on this same socket.
+  List<String> joinedPeersForInitialBacklog() =>
+      _clients.values.map((peer) => peer.deviceId).toList();
+
+  void resetContentBacklogClaims() => _backlogRequestedSockets.clear();
+
   /// Broadcasts a message to all connected participant sockets.
   void broadcast(LanMessage message) {
     final line = message.serialize();
@@ -367,6 +397,7 @@ class LanHostServer {
   }
 
   void _disconnectClient(Socket socket) {
+    _backlogRequestedSockets.remove(socket);
     if (_clients.containsKey(socket)) {
       _clients.remove(socket);
       _notifyParticipantsChanged();
@@ -399,6 +430,7 @@ class LanHostServer {
       }
     }
     _clients.clear();
+    _backlogRequestedSockets.clear();
 
     try {
       await _serverSocket?.close();

@@ -8,6 +8,7 @@ import 'package:readmesh/data/repositories/reading_progress_repository.dart';
 import 'package:readmesh/data/repositories/participant_reading_time_repository.dart';
 import 'package:readmesh/data/repositories/session_content_repository.dart';
 import 'package:readmesh/data/storage/session_voice_store.dart';
+import 'package:readmesh/features/text_messages/domain/text_message.dart';
 import 'lan_host_server.dart';
 import 'lan_message.dart';
 import 'lan_participant_client.dart';
@@ -44,18 +45,40 @@ class SessionContentSync {
 
   Stream<String> get errors => _errors.stream;
 
+  // A participant can attach before the TCP snapshot arrives, or have no
+  // local copy of the PDF. Once known, the Host's count is authoritative,
+  // even when a stale local page count differs from it.
+  int get _contentPageLimit {
+    final livePages = participant?.hasSnapshot == true
+        ? participant!.totalPages : host?.totalPages;
+    return livePages != null && livePages > 0 ? livePages : totalPages;
+  }
+
   void start() {
     if (_subscription != null || _disposed) return;
     if (host != null) {
       _subscription = host!.messageStream.listen((message) {
         if (message.sessionId == sessionId) _queue(message, fromParticipant: true);
       });
+      // A peer might have joined before the Host's content listener attached.
+      for (final target in host!.joinedPeersForInitialBacklog()) {
+        unawaited(_sendBacklog(target).catchError((Object error) {
+          _error('Could not send saved content: $error');
+        }));
+      }
     } else if (participant != null) {
       _subscription = participant!.messageStream.listen((message) {
         if (message.sessionId == sessionId) _queue(message, fromParticipant: false);
       });
-      // The Rooms preflight may have consumed the initial snapshot already.
-      if (participant!.isJoined) _scheduleReplay();
+      if (participant!.isJoined) {
+        // RoomsScreen's preflight can consume the initial snapshot and drop
+        // the Host's join backlog before this subscriber exists. Request a
+        // one-shot catch-up on the same socket, then replay local rows by ID.
+        unawaited(_requestMissedBacklog().catchError((Object error) {
+          _error('Could not request saved content: $error');
+        }));
+        _scheduleReplay();
+      }
     }
   }
 
@@ -104,6 +127,26 @@ class SessionContentSync {
     final updated = note.pin(pinned);
     await repository.saveAnnotation(updated);
     if (updated.visibility == 'shared') await _publishAnnotation(updated);
+  }
+
+  /// Publish a text row already committed by the unified Reader composer.
+  /// MessageRepository and SessionContentRepository share `messages`: never
+  /// insert the same row twice or assign a second LAN identity. A disconnected
+  /// peer retains the row for the existing join replay.
+  Future<bool> publishCommittedText(TextMessage message) async {
+    if (message.sessionId != sessionId || message.senderId != deviceId ||
+        message.pageNumber < 1 || message.pageNumber > _contentPageLimit) {
+      throw StateError('Committed text does not belong to this LAN session');
+    }
+    final entry = SessionDiscussion(
+      id: message.id, sessionId: message.sessionId,
+      pageNumber: message.pageNumber, authorId: message.senderId,
+      authorName: message.senderName, content: message.text,
+      kind: 'text', createdAt: message.createdAt,
+    );
+    entry.validate();
+    return _send(LanMessage.contentUpsert(sessionId: sessionId,
+        deviceId: deviceId, content: entry.toWire()));
   }
 
   Future<SessionDiscussion> sendText(int page, String content) async {
@@ -164,6 +207,12 @@ class SessionContentSync {
         deviceId: deviceId, content: note.toWire()));
   }
 
+  Future<void> _requestMissedBacklog() async {
+    if (_disposed || participant?.isJoined != true) return;
+    await _send(LanMessage.contentReplayRequest(
+        sessionId: sessionId, deviceId: deviceId));
+  }
+
   Future<bool> _send(LanMessage message, {String? toDevice}) async {
     if (_disposed) return false;
     if (host != null) {
@@ -209,7 +258,10 @@ class SessionContentSync {
     try {
       switch (message.type) {
         case LanMessageType.join:
-          if (fromParticipant && host!.hasParticipant(message.senderDeviceId)) {
+        case LanMessageType.contentReplayRequest:
+          if (fromParticipant && host!.hasParticipant(message.senderDeviceId) &&
+              (message.type == LanMessageType.join ||
+                  host!.claimContentBacklog(message.senderDeviceId))) {
             unawaited(_sendBacklog(message.senderDeviceId).catchError((Object error) {
               _error('Could not send saved content: $error');
             }));
@@ -262,11 +314,14 @@ class SessionContentSync {
   Future<void> _receiveContent(LanMessage packet,
       {required bool fromParticipant}) async {
     final data = packet.payload;
+    // A valid 2,000-character text may exceed 4 KB after JSON escaping
+    // (e.g. Arabic/emoji, up to 12 code units per escaped surrogate pair).
+    // Bound it below the TCP line cap; decoded entries are also validated.
     if (data == null || data['sessionId'] != sessionId ||
-        packet.serialize().length > 4096) return;
+        packet.serialize().length > 32768) return;
     if (data['kind'] == 'note' || data['kind'] == 'highlight') {
       final note = SessionAnnotation.fromWire(data, bookId: bookId);
-      if (note.visibility != 'shared' || note.pageNumber > totalPages ||
+      if (note.visibility != 'shared' || note.pageNumber > _contentPageLimit ||
           (fromParticipant && note.authorId != packet.senderDeviceId)) return;
       await repository.saveAnnotation(note);
       if (fromParticipant) {
@@ -280,7 +335,7 @@ class SessionContentSync {
           ? await voiceStore.fileFor(sessionId, id) : null;
       final entry = SessionDiscussion.fromWire(data,
           localVoicePath: localFile?.path);
-      if (entry.pageNumber > totalPages ||
+      if (entry.pageNumber > _contentPageLimit ||
           (fromParticipant && entry.authorId != packet.senderDeviceId)) return;
       if (entry.kind == 'voice') {
         final old = await repository.getDiscussionById(entry.id);
@@ -293,8 +348,10 @@ class SessionContentSync {
         }
       }
       if (entry.kind == 'text') {
-        await repository.saveDiscussion(entry);
-        if (fromParticipant) {
+        final inserted = await repository.saveDiscussion(entry);
+        // A reconnect can replay the same ID; never relay it twice. The
+        // joining peer receives the Host's stored copy from the backlog.
+        if (fromParticipant && inserted) {
           await _send(LanMessage.contentUpsert(sessionId: sessionId,
               deviceId: deviceId, content: entry.toWire()));
         }
@@ -423,6 +480,7 @@ class SessionContentSync {
     _replayGeneration++;
     _incoming.clear();
     await _subscription?.cancel();
+    host?.resetContentBacklogClaims();
     await _errors.close();
   }
 }

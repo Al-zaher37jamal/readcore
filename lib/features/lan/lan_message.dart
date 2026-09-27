@@ -43,6 +43,7 @@ enum LanMessageType {
   voiceChunk, // bounded base64 AAC/M4A fragment
   participantProgress, // independent local reading position
   participantTime, // monotonic cumulative foreground seconds per device
+  contentReplayRequest, // one-shot catch-up when sync attaches after preflight
 }
 
 /// Educational LAN message packet sent as newline-delimited JSON over TCP.
@@ -235,6 +236,18 @@ class LanMessage {
       senderDeviceId: deviceId,
     );
   }
+
+  /// Participant attached its content subscriber after the initial snapshot.
+  /// Requests one catch-up replay without opening another socket or joining
+  /// again; the Host accepts at most one request per joined connection.
+  factory LanMessage.contentReplayRequest({
+    required String sessionId,
+    required String deviceId,
+  }) => LanMessage(
+    type: LanMessageType.contentReplayRequest,
+    sessionId: sessionId,
+    senderDeviceId: deviceId,
+  );
 
   /// Page-scoped note, highlight or discussion metadata. Personal annotations
   /// must never be passed to this constructor by the caller.

@@ -5,11 +5,14 @@ import 'package:flutter/material.dart';
 import 'package:readmesh/core/widgets/app_icon.dart';
 import 'package:readmesh/core/di/injection.dart';
 import 'package:readmesh/core/l10n/app_localizations.dart';
+import 'package:readmesh/core/theme/app_theme.dart';
 import 'package:readmesh/data/database/app_database.dart';
 import 'package:readmesh/data/repositories/audio_message_repository.dart';
 import 'package:readmesh/features/audio_messages/data/local_audio_service.dart';
 import 'package:readmesh/data/repositories/reading_progress_repository.dart';
 import 'package:readmesh/data/repositories/session_repository.dart';
+import 'package:readmesh/data/repositories/session_member_repository.dart';
+import 'package:readmesh/data/repositories/session_reading_timer_repository.dart';
 import 'package:readmesh/data/repositories/session_content_repository.dart';
 import 'package:readmesh/data/repositories/participant_reading_time_repository.dart';
 import 'package:readmesh/data/storage/session_voice_store.dart';
@@ -22,6 +25,8 @@ import 'package:readmesh/features/lan/lan_host_server.dart';
 import 'package:readmesh/features/lan/lan_participant_client.dart';
 import 'package:readmesh/features/profile/device_service.dart';
 import 'package:readmesh/features/reader/pdf_page_view.dart';
+import 'package:readmesh/features/reading_time/presentation/reading_time_widgets.dart';
+import 'package:readmesh/features/reading_time/presentation/session_reading_timer_controller.dart';
 
 /// Screen that opens an imported PDF, renders pages, tracks reading position,
 /// navigates across pages, and automatically saves/restores progress from SQLite.
@@ -48,6 +53,11 @@ class PdfReaderScreen extends StatefulWidget {
   final AudioMessageRepository? audioMessageRepository;
   final LocalAudioService? messageAudioService;
   final ParticipantReadingTimeRepository? readingTimeRepository;
+  final SessionMemberRepository? sessionMemberRepository;
+  final SessionReadingTimerRepository? sessionReadingTimerRepository;
+  /// Optional presentation seam for tests; production builds this from the
+  /// persisted session and device identity after the Reader has initialized.
+  final SessionReadingTimerController? sessionReadingTimerController;
 
   final ReadingProgressRepository? readingProgressRepository;
   final DeviceService? deviceService;
@@ -70,6 +80,9 @@ class PdfReaderScreen extends StatefulWidget {
     this.audioMessageRepository,
     this.messageAudioService,
     this.readingTimeRepository,
+    this.sessionMemberRepository,
+    this.sessionReadingTimerRepository,
+    this.sessionReadingTimerController,
     this.readingProgressRepository,
     this.deviceService,
     this.sessionRepository,
@@ -84,7 +97,12 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> with WidgetsBindingOb
   late final DeviceService _deviceService;
   late final SessionRepository _sessionRepo;
   ParticipantReadingTimeRepository? _readingTimeRepo;
+  SessionReadingTimerController? _sessionTimer;
+  bool _ownsSessionTimer = false;
+  Stream<List<SessionMember>>? _members;
+  String _sessionLeaderId = '';
   SessionContentSync? _contentSync;
+  StreamSubscription<String>? _contentErrorsSub;
   bool _ownsContentSync = false;
   bool _highlightMode = false;
   bool _highlightShared = false;
@@ -117,6 +135,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> with WidgetsBindingOb
   bool _statsEnabled = false;
   Timer? _readingTimer;
   int _elapsedSeconds = 0;
+  final ValueNotifier<int> _elapsedNotifier = ValueNotifier<int>(0);
 
   @override
   void initState() {
@@ -129,9 +148,14 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> with WidgetsBindingOb
         (getIt.isRegistered<ParticipantReadingTimeRepository>()
             ? getIt<ParticipantReadingTimeRepository>() : null);
     _contentSync = widget.contentSync;
+    _listenForSyncErrors();
 
     _totalPages = widget.book.pageCount > 0 ? widget.book.pageCount : 1;
     _activeSessionId = widget.sessionId ?? 'solo_${widget.book.id}';
+    final memberRepo = widget.sessionMemberRepository ??
+        (getIt.isRegistered<SessionMemberRepository>()
+            ? getIt<SessionMemberRepository>() : null);
+    _members = memberRepo?.watchMembersBySessionId(_activeSessionId);
 
     _initializeReader();
     _setupLanSyncSubscriptions();
@@ -201,8 +225,11 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> with WidgetsBindingOb
     WidgetsBinding.instance.removeObserver(this);
     _participantPageSub?.cancel();
     _participantStatusSub?.cancel();
+    _contentErrorsSub?.cancel();
     _stopActivityTimer();
     _readingTimer?.cancel();
+    if (_ownsSessionTimer) _sessionTimer?.dispose();
+    _elapsedNotifier.dispose();
     if (_ownsContentSync && _contentSync != null) {
       unawaited(_contentSync!.dispose());
     }
@@ -213,6 +240,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> with WidgetsBindingOb
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       _startTimerIfEnabled();
+      _sessionTimer?.refresh();
     } else {
       // Leaving the foreground never changes the SQLite session to ended.
       _readingTimer?.cancel();
@@ -250,7 +278,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> with WidgetsBindingOb
       }
       if (!mounted) return;
       if (existingSession == null) {
-        await _sessionRepo.createSession(
+        existingSession = await _sessionRepo.createSession(
           id: _activeSessionId,
           title: _isGroup ? 'Room Session' : 'Personal Reading',
           hostDeviceId: _deviceId,
@@ -269,6 +297,36 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> with WidgetsBindingOb
           });
         }
       }
+      if (!mounted) return;
+
+      _sessionLeaderId = existingSession.hostDeviceId;
+      // The countdown is independent of Phase 6's elapsed-reading statistics.
+      // Bind it once here, not inside build/PdfPageView, so ticks repaint only
+      // the badge and the expanded timer tool.
+      final injectedTimer = widget.sessionReadingTimerController;
+      if (injectedTimer != null &&
+          (injectedTimer.sessionId != _activeSessionId ||
+           injectedTimer.actorDeviceId != _deviceId)) {
+        throw StateError('Timer controller belongs to a different reader');
+      }
+      final timerRepo = widget.sessionReadingTimerRepository ??
+          (getIt.isRegistered<SessionReadingTimerRepository>()
+              ? getIt<SessionReadingTimerRepository>() : null);
+      if (_ownsSessionTimer) _sessionTimer?.dispose();
+      _ownsSessionTimer = injectedTimer == null && timerRepo != null;
+      _sessionTimer = injectedTimer ?? (timerRepo == null ? null :
+          SessionReadingTimerController(repository: timerRepo,
+            sessionRepository: _sessionRepo, sessionId: _activeSessionId,
+            actorDeviceId: _deviceId));
+      try {
+        await _sessionTimer?.load();
+      } catch (_) {
+        // A timer storage error must not hide the PDF or local messages.
+        if (_ownsSessionTimer) _sessionTimer?.dispose();
+        _sessionTimer = null;
+        _ownsSessionTimer = false;
+      }
+      if (!mounted) return;
 
       // Phase 6: load timer/stats flags
       try {
@@ -280,7 +338,9 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> with WidgetsBindingOb
       } catch (_) {}
 
       final previousTime = await _readingTimeRepo?.getTime(_activeSessionId, _deviceId);
+      if (!mounted) return;
       _elapsedSeconds = previousTime?.totalSeconds ?? 0;
+      _elapsedNotifier.value = _elapsedSeconds;
 
       ReadingProgress? savedProgress =
           await _progressRepo.getProgress(_activeSessionId, _deviceId);
@@ -313,7 +373,14 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> with WidgetsBindingOb
         }
       }
 
-      if (widget.showLegacySessionContent) await _attachContentSync();
+      // The inline group composer needs the same Phase 6 sync that the
+      // legacy sheet uses. Reuse RoomDetail's instance when supplied; only
+      // create one here for a Reader opened directly with a LAN connection.
+      if (widget.showLegacySessionContent ||
+          (_isGroup && (widget.hostServer != null ||
+              widget.participantClient != null))) {
+        await _attachContentSync();
+      }
       if (mounted && (widget.isHost || client == null || client.hasSnapshot)) {
         await _saveProgress();
       }
@@ -339,6 +406,19 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> with WidgetsBindingOb
     }
   }
 
+  void _listenForSyncErrors() {
+    // The legacy sheet already subscribes when opened. The inline composer
+    // must also surface receive/SQLite failures rather than looking stale.
+    if (widget.showLegacySessionContent || _contentErrorsSub != null) return;
+    _contentErrorsSub = _contentSync?.errors.listen((error) {
+      if (!mounted) return;
+      ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(
+        content: Text('${AppLocalizations.of(context).tr('lanSyncError')}: $error'),
+        backgroundColor: Colors.red,
+      ));
+    });
+  }
+
   Future<void> _attachContentSync() async {
     if (_contentSync != null || !mounted) return;
     final content = widget.contentRepository ??
@@ -346,7 +426,9 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> with WidgetsBindingOb
             ? getIt<SessionContentRepository>() : null);
     final files = widget.voiceStore ??
         (getIt.isRegistered<SessionVoiceStore>() ? getIt<SessionVoiceStore>() : null);
-    if (content == null || files == null) return;
+    if (content == null || files == null) {
+      throw StateError(AppLocalizations.of(context).tr('lanSyncUnavailable'));
+    }
     final profile = await _deviceService.getOrCreateCurrentProfile();
     if (!mounted) return;
     _contentSync = SessionContentSync(
@@ -359,6 +441,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> with WidgetsBindingOb
       participant: widget.isHost ? null : widget.participantClient,
     )..start();
     _ownsContentSync = true;
+    _listenForSyncErrors();
   }
 
   void _startTimerIfEnabled() {
@@ -368,9 +451,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> with WidgetsBindingOb
     _readingTimer?.cancel();
     _readingTimer = Timer.periodic(const Duration(seconds: 1), (t) {
       if (!mounted) return;
-      setState(() {
-        _elapsedSeconds++;
-      });
+      _elapsedNotifier.value = ++_elapsedSeconds;
     });
   }
 
@@ -391,7 +472,9 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> with WidgetsBindingOb
     final seconds = now.difference(previous).inSeconds;
     if (seconds <= 0) return;
     _lastActivityAt = previous.add(Duration(seconds: seconds));
-    if (!_timerEnabled && mounted) setState(() => _elapsedSeconds += seconds);
+    if (!_timerEnabled && mounted) {
+      _elapsedNotifier.value = _elapsedSeconds += seconds;
+    }
     final session = _activeSessionId;
     final device = _deviceId;
     _lastActivityWrite = _lastActivityWrite.catchError((_) {}).then((_) async {
@@ -586,7 +669,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> with WidgetsBindingOb
                 padding: const EdgeInsets.only(bottom: 12),
                 child: Row(
                   children: [
-                    AppIcon.history(size: 18, color: const Color(0xFF2563EB)),
+                    AppIcon.history(size: 18, color: AppTheme.primaryColor),
                     const SizedBox(width: 6),
                     Text('${l10n.timerEnabledLabel}: ${_formatElapsed(_elapsedSeconds)}',
                         style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
@@ -599,7 +682,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> with WidgetsBindingOb
               icon: AppIcon.bookmark(size: 20),
               label: Text(l10n.saveAndLeave),
               style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF2563EB),
+                backgroundColor: AppTheme.primaryColor,
                 foregroundColor: Colors.white,
                 padding: const EdgeInsets.symmetric(vertical: 12),
               ),
@@ -831,25 +914,26 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> with WidgetsBindingOb
         }
       },
       child: Scaffold(
-        backgroundColor: const Color(0xFFF8FAFC),
+        backgroundColor: AppTheme.backgroundColor,
         appBar: AppBar(
-          title: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+          backgroundColor: AppTheme.surfaceColor,
+          foregroundColor: AppTheme.textPrimaryColor,
+          centerTitle: true,
+          title: Column(crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              Text(
-                widget.book.title,
-                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-              if (_isGroup)
-                Text(
-                  '${l10n.roomCode}: ${widget.sessionId}',
-                  maxLines: 1, overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 11, color: Color(0xFF10B981)),
-                ),
-            ],
-          ),
+              Text(widget.book.title, key: const Key('reader_book_title'),
+                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                maxLines: 1, overflow: TextOverflow.ellipsis),
+              if (_isGroup) Text('${l10n.roomCode}: ${widget.sessionId}',
+                maxLines: 1, overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 11,
+                    color: AppTheme.textSecondaryColor)),
+            ]),
+          bottom: _isLoading || _errorMessage != null ? null : PreferredSize(
+            preferredSize: const Size.fromHeight(readerSessionInfoBarHeight),
+            child: ReaderSessionInfoBar(
+              timer: _sessionTimer, members: _members,
+              hostDeviceId: _sessionLeaderId, isGroup: _isGroup)),
           actions: [
             if (widget.showLegacySessionContent && _contentSync != null) ...[
               IconButton(key: const Key('reader_notes_discussion'),
@@ -863,16 +947,6 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> with WidgetsBindingOb
                 onPressed: _isLoading || _errorMessage != null || !_canTurnPage
                     ? null : _chooseHighlight),
             ],
-            if (_timerEnabled)
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 16),
-                child: Center(
-                  child: Text(
-                    _formatElapsed(_elapsedSeconds),
-                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF2563EB)),
-                  ),
-                ),
-              ),
             if (widget.isHost && _isGroup &&
                 (_sessionStatus == 'active' || _sessionStatus == 'paused'))
               IconButton(
@@ -907,7 +981,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> with WidgetsBindingOb
             const SizedBox(height: 16),
             Text(
               l10n.openingDocument,
-              style: const TextStyle(color: Color(0xFF64748B)),
+              style: const TextStyle(color: AppTheme.textSecondaryColor),
             ),
           ],
         ),
@@ -952,12 +1026,13 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> with WidgetsBindingOb
         const navigationAndProgressHeight = 76.0;
         final remainingHeight = math.max(
           0.0, constraints.maxHeight - navigationAndProgressHeight);
-        // Keep the page controls reachable even in landscape/with the IME.
-        // In an exceptionally short viewport, reduce the PDF further so the
-        // user can start scrolling from a visible part of the controls.
+        // Preserve the 160px real PDF in landscape; the scrollable Reader
+        // gives controls/composer room below it. Only very small keyboard
+        // viewports shrink the PDF further (never below 80px).
         final minPdfHeight = constraints.maxHeight < 400
             ? math.min(160.0, math.max(80.0,
-                constraints.maxHeight - navigationAndProgressHeight - 20.0))
+                constraints.maxHeight - navigationAndProgressHeight - 20.0 +
+                    readerSessionInfoBarHeight))
             : 240.0;
         final pdfHeight = math.max(minPdfHeight, remainingHeight * 0.56);
         final messagesHeight = math.max(240.0, remainingHeight * 0.44);
@@ -969,7 +1044,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> with WidgetsBindingOb
               if (_sessionStatus == 'paused')
                 Container(
                   width: double.infinity,
-                  color: const Color(0xFFFEF3C7),
+                  color: AppTheme.softWarning,
                   padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.center,
@@ -990,19 +1065,19 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> with WidgetsBindingOb
               if (_sessionStatus == 'saved')
                 Container(
                   width: double.infinity,
-                  color: const Color(0xFFEFF6FF),
+                  color: AppTheme.softBlue,
                   padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
                   child: Center(child: Text(l10n.savedStatus)),
                 ),
               if (_sessionStatus == 'ended')
                 Container(
                   width: double.infinity,
-                  color: const Color(0xFFF1F5F9),
+                  color: AppTheme.softSky,
                   padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      AppIcon.stop(size: 18, color: Color(0xFF64748B)),
+                      AppIcon.stop(size: 18, color: AppTheme.textSecondaryColor),
                       const SizedBox(width: 8),
                       Text(
                         l10n.readingSessionEnded,
@@ -1017,8 +1092,8 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> with WidgetsBindingOb
                 ),
               LinearProgressIndicator(
                 value: _totalPages > 0 ? (_currentPage / _totalPages) : 0,
-                backgroundColor: const Color(0xFFE2E8F0),
-                color: isParticipantMode ? const Color(0xFF10B981) : const Color(0xFF2563EB),
+                backgroundColor: AppTheme.borderColor,
+                color: isParticipantMode ? const Color(0xFF10B981) : AppTheme.primaryColor,
                 minHeight: 4,
               ),
               if (widget.showLegacySessionContent && _contentSync != null && _deviceId.isNotEmpty)
@@ -1044,7 +1119,8 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> with WidgetsBindingOb
                 ),
               SizedBox(
                 height: pdfHeight,
-                child: _sessionStatus == 'ended'
+                child: ColoredBox(color: AppTheme.surfaceColor,
+                  child: _sessionStatus == 'ended'
                     ? Center(
                         child: SingleChildScrollView(
                           child: Padding(
@@ -1055,7 +1131,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> with WidgetsBindingOb
                                 const SizedBox(height: 12),
                                 Text(
                                   l10n.sessionEnded,
-                                  style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF64748B)),
+                                  style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: AppTheme.textSecondaryColor),
                                   textAlign: TextAlign.center,
                                 ),
                                 const SizedBox(height: 8),
@@ -1073,7 +1149,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> with WidgetsBindingOb
                                   if (_timerEnabled)
                                     Text(
                                       '${l10n.timerEnabledLabel}: ${_formatElapsed(_elapsedSeconds)}',
-                                      style: const TextStyle(fontSize: 12, color: Color(0xFF64748B)),
+                                      style: const TextStyle(fontSize: 12, color: AppTheme.textSecondaryColor),
                                     ),
                                 ],
                               ],
@@ -1082,10 +1158,19 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> with WidgetsBindingOb
                         ),
                       )
                     : _buildAnnotatedPage(isParticipantMode),
+                ),
               ),
               // Solo and Group share one offline, page-scoped text/audio
               // discussion. Its streams and player never recreate PdfPageView.
               _buildBottomBar(),
+              ReaderToolsSection(
+                timer: _sessionTimer,
+                canEditSession: _canTurnPage,
+                elapsedEnabled: _timerEnabled,
+                elapsedSeconds: _elapsedNotifier,
+                statsEnabled: _statsEnabled,
+                onOptionSelected: _toggleReadingOption,
+              ),
               SizedBox(
                 height: messagesHeight,
                 child: TextMessagesPanel(
@@ -1095,6 +1180,8 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> with WidgetsBindingOb
                   senderName: _displayName,
                   canSend: _canTurnPage,
                   controller: widget.textMessagesController,
+                  publishCommittedText: _isGroup
+                      ? _contentSync?.publishCommittedText : null,
                   audioRepository: widget.audioMessageRepository,
                   audioService: widget.messageAudioService,
                   voiceStore: widget.voiceStore,
@@ -1164,8 +1251,10 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> with WidgetsBindingOb
     final isRtl = Directionality.of(context) == TextDirection.rtl;
 
     return Container(
-      color: Colors.white,
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      decoration: const BoxDecoration(color: AppTheme.surfaceColor,
+        border: Border(top: BorderSide(color: AppTheme.borderColor),
+          bottom: BorderSide(color: AppTheme.borderColor))),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       child: SafeArea(top: false, bottom: false,
         child: Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -1180,26 +1269,34 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> with WidgetsBindingOb
             Expanded(child: InkWell(
               onTap: isParticipantMode || !_canTurnPage ? null : _showJumpToPageDialog,
               borderRadius: BorderRadius.circular(8),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                decoration: BoxDecoration(color: AppTheme.softBlue,
+                    borderRadius: BorderRadius.circular(10)),
                 child: Row(
                   children: [
                     if (isParticipantMode) ...[
                       AppIcon.refresh(size: 16, color: Color(0xFF10B981)),
                       const SizedBox(width: 4),
                     ],
-                    Expanded(child: Text(
-                      isParticipantMode
-                          ? l10n.syncedPage(_currentPage, _totalPages)
-                          : l10n.pageOf(_currentPage, _totalPages),
-                      key: const Key('page_number_display'),
-                      textAlign: TextAlign.center, maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 14,
-                        color: isParticipantMode ? const Color(0xFF047857) : const Color(0xFF1E293B),
-                      ),
+                    Expanded(child: Column(mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Directionality(textDirection: TextDirection.ltr,
+                          child: Text('$_currentPage / $_totalPages',
+                            key: const Key('page_fraction_display'),
+                            maxLines: 1, textAlign: TextAlign.center,
+                            style: const TextStyle(fontSize: 16,
+                                color: AppTheme.primaryColor,
+                                fontWeight: FontWeight.w600))),
+                        Text(isParticipantMode
+                            ? l10n.syncedPage(_currentPage, _totalPages)
+                            : l10n.pageOf(_currentPage, _totalPages),
+                          key: const Key('page_number_display'),
+                          textAlign: TextAlign.center, maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 10,
+                              color: AppTheme.textSecondaryColor)),
+                      ],
                     )),
                   ],
                 ),
@@ -1211,19 +1308,6 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> with WidgetsBindingOb
                   : const AppIcon.forward(size: 32),
               onPressed: !isParticipantMode && _canTurnPage && _currentPage < _totalPages ? nextPage : null,
               tooltip: isParticipantMode ? l10n.waitingForParticipants : l10n.tr('nextPage'),
-            ),
-            PopupMenuButton<String>(
-              key: const Key('reader_timer_stats_menu'),
-              icon: const Icon(Icons.more_time),
-              tooltip: l10n.tr('readTime'),
-              enabled: _canTurnPage,
-              onSelected: _toggleReadingOption,
-              itemBuilder: (_) => [
-                CheckedPopupMenuItem(value: 'timer', checked: _timerEnabled,
-                    child: Text(l10n.enableTimerLabel)),
-                CheckedPopupMenuItem(value: 'stats', checked: _statsEnabled,
-                    child: Text(l10n.enableStatsLabel)),
-              ],
             ),
           ],
         ),

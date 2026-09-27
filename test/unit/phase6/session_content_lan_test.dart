@@ -1,9 +1,14 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:readmesh/core/l10n/app_localizations.dart';
 import 'package:readmesh/data/database/app_database.dart';
 import 'package:readmesh/data/repositories/book_repository.dart';
+import 'package:readmesh/data/repositories/message_repository.dart';
 import 'package:readmesh/data/repositories/participant_reading_time_repository.dart';
 import 'package:readmesh/data/repositories/reading_progress_repository.dart';
 import 'package:readmesh/data/repositories/session_content_repository.dart';
@@ -13,6 +18,8 @@ import 'package:readmesh/features/lan/lan_host_server.dart';
 import 'package:readmesh/features/lan/lan_message.dart';
 import 'package:readmesh/features/lan/lan_participant_client.dart';
 import 'package:readmesh/features/lan/session_content_sync.dart';
+import 'package:readmesh/features/text_messages/presentation/text_messages_controller.dart';
+import 'package:readmesh/features/text_messages/presentation/text_messages_panel.dart';
 
 const _room = 'RM-VOICE-LAN';
 const _book = 'identical-pdf-on-both-phones';
@@ -22,6 +29,7 @@ class _Phone {
   final Directory root;
   late final SessionRepository sessions = SessionRepositoryImpl(db);
   late final SessionContentRepository content = SessionContentRepository(db);
+  late final MessageRepository messages = MessageRepositoryImpl(db);
   late final ReadingProgressRepository progress = ReadingProgressRepositoryImpl(db);
   late final ParticipantReadingTimeRepository times = ParticipantReadingTimeRepositoryImpl(db);
   late final SessionVoiceStore voices = SessionVoiceStore(root);
@@ -36,9 +44,9 @@ class _Phone {
   }
 
   SessionContentSync bridge(String id, {LanHostServer? host,
-      LanParticipantClient? participant}) => SessionContentSync(
+      LanParticipantClient? participant, int totalPages = 20}) => SessionContentSync(
     sessionId: _room, bookId: _book, deviceId: id,
-    displayName: id, totalPages: 20, repository: content,
+    displayName: id, totalPages: totalPages, repository: content,
     voiceStore: voices, progressRepository: progress,
     readingTimeRepository: times, host: host, participant: participant,
   )..start();
@@ -135,6 +143,271 @@ void main() {
     await validSeen;
     expect((await a.content.watchDiscussion(_room, 11).first).length, 1,
         reason: 'Host ignores content with a forged joined-socket sender ID');
+  });
+
+  test('Reader text crosses real TCP in both directions, commits once and wakes Drift', () async {
+    // Model RoomsScreen's preflight: the same client stays connected while
+    // RoomDetail attaches its sync after the snapshot (no replacement socket).
+    await syncC.dispose();
+    final beforeJoinSender = TextMessagesController(repository: a.messages,
+        sessionId: _room, senderId: 'host', senderName: 'Host');
+    final beforeJoin = await beforeJoinSender.send(6, 'Saved before peer joined');
+    expect(await syncA.publishCommittedText(beforeJoin), isTrue);
+    final preflight = clientC.messageStream.listen((_) {});
+    final missedBacklog = clientC.messageStream.firstWhere((packet) =>
+        packet.type == LanMessageType.contentUpsert &&
+        packet.payload?['id'] == beforeJoin.id).timeout(const Duration(seconds: 5));
+    try {
+      await _awaitJoin(clientC, server);
+      await missedBacklog;
+      expect(await c.messages.getPageText(_room, 6), isEmpty,
+          reason: 'The preflight listener cannot persist the first backlog');
+      expect(server.connectedClientCount, 2);
+      final catchUp = c.messages.watchPageText(_room, 6).firstWhere(
+          (rows) => rows.isNotEmpty).timeout(const Duration(seconds: 5));
+      // This phone has no local page count at attach time. The Host snapshot
+      // authorizes pages beyond the fallback of 1. Attaching late asks for
+      // saved content on the same socket, without a second join or listener.
+      syncC = c.bridge('phone-c', participant: clientC, totalPages: 1);
+      expect((await catchUp).single.id, beforeJoin.id);
+      // Keep a separate observer, just as the preflight does: broadcasts
+      // must not consume each other's messages.
+      final relayed = <LanMessage>[];
+      final wireSub = clientC.messageStream.listen((packet) {
+        if (packet.type == LanMessageType.contentUpsert) relayed.add(packet);
+      });
+      try {
+        final fromB = TextMessagesController(repository: b.messages,
+            sessionId: _room, senderId: 'phone-b', senderName: 'Phone B');
+        final fromA = TextMessagesController(repository: a.messages,
+            sessionId: _room, senderId: 'host', senderName: 'Host');
+        final fromCController = TextMessagesController(repository: c.messages,
+            sessionId: _room, senderId: 'phone-c', senderName: 'Phone C');
+
+        final aSeesB = a.messages.watchPageText(_room, 7).firstWhere(
+            (rows) => rows.any((row) => row.text == 'من ب إلى أ'))
+            .timeout(const Duration(seconds: 5));
+        final cSeesB = c.content.watchDiscussion(_room, 7).firstWhere(
+            (rows) => rows.any((row) => row.content == 'من ب إلى أ'))
+            .timeout(const Duration(seconds: 5));
+        final bRow = await fromB.send(7, 'من ب إلى أ');
+        expect((await b.messages.getPageText(_room, 7)).single.id, bRow.id,
+            reason: 'The local DB commits before LAN publication');
+        final hostWire = server.messageStream.firstWhere((packet) =>
+            packet.type == LanMessageType.contentUpsert &&
+            packet.payload?['id'] == bRow.id).timeout(const Duration(seconds: 5));
+        expect(await syncB.publishCommittedText(bRow), isTrue);
+        expect((await hostWire).senderDeviceId, 'phone-b');
+        expect((await aSeesB).single.id, bRow.id);
+        expect((await cSeesB).single.id, bRow.id);
+        expect((await b.messages.getPageText(_room, 7)), hasLength(1),
+            reason: 'The Host echo has the same ID, not a second row');
+
+        final bSeesA = b.messages.watchPageText(_room, 10).firstWhere(
+            (rows) => rows.isNotEmpty).timeout(const Duration(seconds: 5));
+        final cSeesA = c.messages.watchPageText(_room, 10).firstWhere(
+            (rows) => rows.isNotEmpty).timeout(const Duration(seconds: 5));
+        final longArabic = 'مرحبا ' + List.filled(700, '🌟').join();
+        final aRow = await fromA.send(10, longArabic);
+        expect(await syncA.publishCommittedText(aRow), isTrue);
+        expect((await bSeesA).single.text, longArabic);
+        expect((await cSeesA).single.id, aRow.id);
+        // JSON-escaped yet valid text can exceed the old 4 KB receive guard.
+        final escaped = 'مرحبا ' + List.filled(900, '\u0001').join() + ' 🌟';
+        expect(jsonEncode(escaped).length, greaterThan(4096));
+        final escapedOnB = b.messages.watchPageText(_room, 16).firstWhere(
+            (rows) => rows.isNotEmpty).timeout(const Duration(seconds: 5));
+        final escapedRow = await fromA.send(16, escaped);
+        expect(await syncA.publishCommittedText(escapedRow), isTrue);
+        expect((await escapedOnB).single.text, escaped);
+        expect(await c.messages.getPageText(_room, 9), isEmpty,
+            reason: 'Page filtering is still handled by SQLite');
+
+        final aSeesC = a.messages.watchPageText(_room, 15).firstWhere(
+            (rows) => rows.isNotEmpty).timeout(const Duration(seconds: 5));
+        final bSeesC = b.messages.watchPageText(_room, 15).firstWhere(
+            (rows) => rows.isNotEmpty).timeout(const Duration(seconds: 5));
+        final cRow = await fromCController.send(15, 'من ج إلى أ');
+        expect(await syncC.publishCommittedText(cRow), isTrue);
+        expect((await aSeesC).single.id, cRow.id);
+        expect((await bSeesC).single.id, cRow.id);
+
+        // The older discussion sheet's sendText uses the same transport and
+        // table. Both generations of Reader must display each other's text.
+        final legacyOnB = b.messages.watchPageText(_room, 8).firstWhere(
+            (rows) => rows.isNotEmpty).timeout(const Duration(seconds: 5));
+        final legacy = await syncA.sendText(8, 'Legacy host text');
+        expect((await legacyOnB).single.id, legacy.id);
+        final legacyOnA = a.messages.watchPageText(_room, 9).firstWhere(
+            (rows) => rows.isNotEmpty).timeout(const Duration(seconds: 5));
+        final olderPeer = await syncB.sendText(9, 'Legacy peer text');
+        expect((await legacyOnA).single.id, olderPeer.id);
+
+        // A replay of the same ID may arrive on the existing socket. Wait
+        // for a subsequent marker over that socket instead of sleeping or
+        // polling to prove that the Host did not relay the duplicate again.
+        final repeated = server.messageStream.firstWhere((packet) =>
+            packet.type == LanMessageType.contentUpsert &&
+            packet.payload?['id'] == bRow.id).timeout(const Duration(seconds: 5));
+        expect(await syncB.publishCommittedText(bRow), isTrue);
+        await repeated;
+        final cSeesMarker = c.messages.watchPageText(_room, 7).firstWhere(
+            (rows) => rows.length == 2).timeout(const Duration(seconds: 5));
+        final marker = await fromB.send(7, 'ordered marker');
+        expect(await syncB.publishCommittedText(marker), isTrue);
+        expect((await cSeesMarker).map((m) => m.id), contains(marker.id));
+        expect(relayed.where((packet) => packet.payload?['id'] == bRow.id),
+            hasLength(1));
+        expect(await a.messages.getPageText(_room, 7), hasLength(2));
+        expect(await b.messages.getPageText(_room, 7), hasLength(2));
+        expect(await c.messages.getPageText(_room, 7), hasLength(2));
+        // The old discussion UI reads these very same rows.
+        expect((await a.content.watchDiscussion(_room, 7).first)
+            .where((m) => m.id == bRow.id), hasLength(1));
+      } finally {
+        await wireSub.cancel();
+        // The preflight listener remains until the room is left.
+      }
+    } finally {
+      await preflight.cancel();
+    }
+  });
+
+  test('preflight peer can request missed text after Host sync attached first', () async {
+    await syncA.dispose();
+    await syncC.dispose();
+    final sender = TextMessagesController(repository: a.messages,
+        sessionId: _room, senderId: 'host', senderName: 'Host');
+    final saved = await sender.send(17, 'Host text before both bridges');
+    final preflight = clientC.messageStream.listen((_) {});
+    try {
+      await _awaitJoin(clientC, server);
+      // The Host subscribes *after* JOIN, but before the participant's
+      // content listener. Its initial backlog reaches only the preflight.
+      final initialPacket = clientC.messageStream.firstWhere((packet) =>
+          packet.type == LanMessageType.contentUpsert &&
+          packet.payload?['id'] == saved.id).timeout(const Duration(seconds: 5));
+      syncA = a.bridge('host', host: server);
+      await initialPacket;
+      expect(await c.messages.getPageText(_room, 17), isEmpty);
+
+      final requested = server.messageStream.firstWhere((packet) =>
+          packet.type == LanMessageType.contentReplayRequest &&
+          packet.senderDeviceId == 'phone-c').timeout(const Duration(seconds: 5));
+      final onPeer = c.messages.watchPageText(_room, 17).firstWhere((rows) =>
+          rows.any((row) => row.id == saved.id)).timeout(const Duration(seconds: 5));
+      syncC = c.bridge('phone-c', participant: clientC);
+      await requested;
+      expect((await onPeer).single.id, saved.id,
+          reason: 'The initial backlog must not consume the later catch-up');
+      expect(server.connectedClientCount, 2,
+          reason: 'Catch-up uses the original TCP socket, not a second join');
+      expect(await c.messages.getPageText(_room, 17), hasLength(1));
+    } finally {
+      await preflight.cancel();
+    }
+  });
+
+  test('Host sync attaching after join catches a missed one-shot request', () async {
+    await syncA.dispose();
+    await syncB.dispose();
+    final hostSender = TextMessagesController(repository: a.messages,
+        sessionId: _room, senderId: 'host', senderName: 'Host');
+    final row = await hostSender.send(18, 'Host backlog before listener');
+    final requestSeen = server.messageStream.firstWhere((packet) =>
+        packet.type == LanMessageType.contentReplayRequest &&
+        packet.senderDeviceId == 'phone-b').timeout(const Duration(seconds: 5));
+    syncB = b.bridge('phone-b', participant: clientB);
+    await requestSeen;
+    expect(await b.messages.getPageText(_room, 18), isEmpty);
+    final catchUp = b.messages.watchPageText(_room, 18).firstWhere(
+        (rows) => rows.isNotEmpty).timeout(const Duration(seconds: 5));
+    syncA = a.bridge('host', host: server);
+    expect((await catchUp).single.id, row.id);
+    expect(server.connectedClientCount, 1);
+  });
+
+  test('committed Reader text stays offline and replays by ID on the same client', () async {
+    await clientB.disconnect();
+    final sender = TextMessagesController(repository: b.messages,
+        sessionId: _room, senderId: 'phone-b', senderName: 'Phone B');
+    final saved = await sender.send(13, 'Offline message');
+    expect(await syncB.publishCommittedText(saved), isFalse);
+    expect((await b.messages.getPageText(_room, 13)).single.id, saved.id);
+    expect(await a.messages.getPageText(_room, 13), isEmpty);
+    final onHost = a.messages.watchPageText(_room, 13).firstWhere(
+        (rows) => rows.isNotEmpty).timeout(const Duration(seconds: 5));
+    await _awaitJoin(clientB, server);
+    expect((await onHost).single.id, saved.id);
+    expect((await b.messages.getPageText(_room, 13)).single.id, saved.id);
+    expect(server.connectedClientCount, 1);
+  });
+
+  testWidgets('inline Reader composer Send updates the other phone without reopening',
+      (tester) async {
+    final hostController = TextMessagesController(repository: a.messages,
+        sessionId: _room, senderId: 'host', senderName: 'Host');
+    final peerController = TextMessagesController(repository: b.messages,
+        sessionId: _room, senderId: 'phone-b', senderName: 'Phone B');
+    Widget phone(String key, String id, String name,
+        TextMessagesController controller, SessionContentSync sync) =>
+        Expanded(child: SizedBox(key: Key(key), height: 400,
+          child: TextMessagesPanel(sessionId: _room, pageNumber: 4,
+            senderId: id, senderName: name, canSend: true,
+            controller: controller,
+            publishCommittedText: sync.publishCommittedText)));
+    await tester.pumpWidget(MaterialApp(
+      locale: const Locale('ar'),
+      supportedLocales: const [Locale('ar'), Locale('en')],
+      localizationsDelegates: const [
+        AppLocalizationsDelegate(),
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
+      home: Scaffold(body: Center(child: SizedBox(height: 400,
+        child: Row(children: [
+          phone('host_panel', 'host', 'Host', hostController, syncA),
+          phone('peer_panel', 'phone-b', 'Phone B', peerController, syncB),
+        ])))),
+    ));
+    await tester.runAsync(() => Future<void>.delayed(
+        const Duration(milliseconds: 30)));
+    await tester.pump();
+
+    Future<void> sendFrom(String key, String text) async {
+      final panel = find.byKey(Key(key));
+      await tester.enterText(find.descendant(of: panel,
+          matching: find.byKey(const Key('text_message_input'))), text);
+      await tester.pump();
+      await tester.tap(find.descendant(of: panel,
+          matching: find.byKey(const Key('send_text_message_button'))));
+    }
+
+    await sendFrom('host_panel', 'أهلاً من المضيف');
+    final onPeer = await tester.runAsync(() => b.messages.watchPageText(_room, 4)
+        .firstWhere((rows) => rows.any((m) => m.text == 'أهلاً من المضيف'))
+        .timeout(const Duration(seconds: 5)));
+    expect(onPeer, isNotNull);
+    await tester.pumpAndSettle();
+    expect(find.descendant(of: find.byKey(const Key('peer_panel')),
+        matching: find.byKey(Key('message_body_${onPeer!.single.id}'))),
+        findsOneWidget);
+
+    await sendFrom('peer_panel', 'Hello from peer');
+    final onHost = await tester.runAsync(() => a.messages.watchPageText(_room, 4)
+        .firstWhere((rows) => rows.any((m) => m.text == 'Hello from peer'))
+        .timeout(const Duration(seconds: 5)));
+    expect(onHost, isNotNull);
+    await tester.pumpAndSettle();
+    final received = onHost!.singleWhere((m) => m.text == 'Hello from peer');
+    expect(find.descendant(of: find.byKey(const Key('host_panel')),
+        matching: find.byKey(Key('message_body_${received.id}'))),
+        findsOneWidget);
+    expect(await a.messages.getPageText(_room, 4), hasLength(2));
+    expect(await b.messages.getPageText(_room, 4), hasLength(2));
+    // Detach both Drift subscriptions before tearDown closes their databases.
+    await tester.pumpWidget(const SizedBox());
   });
 
   test('voice chunks, hash, replay for late peer, progress and time per device', () async {
